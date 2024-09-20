@@ -15,8 +15,10 @@
 // Tests for user/user_model.cc.
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <string>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -34,10 +36,15 @@ using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 using ::testing::IsNull;
 using ::testing::NotNull;
+using ::testing::Pointwise;
 
 static std::vector<mjtNum> GetRow(const mjtNum* array, int ncolumn, int row) {
   return std::vector<mjtNum>(array + ncolumn * row,
                              array + ncolumn * (row + 1));
+}
+
+std::vector<mjtNum> AsVector(const mjtNum* array, int n) {
+  return std::vector<mjtNum>(array, array + n);
 }
 
 // ----------------------------- test mjCModel  --------------------------------
@@ -61,6 +68,58 @@ TEST_F(UserCModelTest, RepeatedNames) {
   EXPECT_THAT(model, IsNull());
   EXPECT_THAT(error.data(), HasSubstr("repeated name 'geom1' in geom"));
 }
+
+TEST_F(UserCModelTest, SameFrame) {
+  static constexpr char xml[] = R"(
+   <mujoco>
+     <default>
+      <geom type="box" size="1 2 3"/>
+     </default>
+
+     <worldbody>
+       <body name="body1">
+         <geom name="none"       mass="0" pos="1 1 1" euler="10 10 10"/>
+         <geom name="body"       mass="0"/>
+         <geom name="inertia"    mass="1" pos="3 2 1" euler="20 30 40"/>
+         <geom name="bodyrot"    mass="0" pos="1 1 1"/>
+         <geom name="inertiarot" mass="0" euler="20 30 40"/>
+        </body>
+      </worldbody>
+    </mujoco>)";
+
+  std::array<char, 1024> error;
+  mjModel* model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model, NotNull()) << error.data();
+  EXPECT_EQ(model->geom_sameframe[0], mjSAMEFRAME_NONE);
+  EXPECT_EQ(model->geom_sameframe[1], mjSAMEFRAME_BODY);
+  EXPECT_EQ(model->geom_sameframe[2], mjSAMEFRAME_INERTIA);
+  EXPECT_EQ(model->geom_sameframe[3], mjSAMEFRAME_BODYROT);
+  EXPECT_EQ(model->geom_sameframe[4], mjSAMEFRAME_INERTIAROT);
+
+  // make data, get geom_xpos
+  mjData* data = mj_makeData(model);
+  mj_kinematics(model, data);
+  auto geom_xpos = AsVector(data->geom_xpos, model->ngeom*3);
+  auto geom_xmat = AsVector(data->geom_xmat, model->ngeom*9);
+
+  // set all geom_sameframe to 0, call kinematics again
+  for (int i = 0; i < model->ngeom; i++) {
+    model->geom_sameframe[i] = mjSAMEFRAME_NONE;
+  }
+  mj_resetData(model, data);
+  mj_kinematics(model, data);
+  auto geom_xpos2 = AsVector(data->geom_xpos, model->ngeom*3);
+  auto geom_xmat2 = AsVector(data->geom_xmat, model->ngeom*9);
+
+  // expect them to be equal
+  constexpr double eps = 1e-6;
+  EXPECT_THAT(geom_xpos, Pointwise(DoubleNear(eps), geom_xpos2));
+  EXPECT_THAT(geom_xmat, Pointwise(DoubleNear(eps), geom_xmat2));
+
+  mj_deleteData(data);
+  mj_deleteModel(model);
+}
+
 
 // ------------- test automatic inference of nuser_xxx -------------------------
 
@@ -248,9 +307,10 @@ TEST_F(FuseStaticTest, FuseStaticEquivalent) {
     <worldbody>
       <body>
         <joint axis="1 0 0"/>
-        <geom size="0.5" pos="1 0 0"/>
+        <geom size="0.5" pos="1 0 0" contype="0" conaffinity="0"/>
         <body>
-          <geom size="0.5" pos="0 1 0"/>
+          <geom size="0.5" pos="0 1 0" contype="1" conaffinity="1"/>
+          <geom size="0.5" pos="0 -2 0" contype="1" conaffinity="1"/>
         </body>
       </body>
     </worldbody>
@@ -268,13 +328,21 @@ TEST_F(FuseStaticTest, FuseStaticEquivalent) {
   EXPECT_EQ(m_fuse->nbody, 2) << "Expecting a world body and one other body";
   EXPECT_EQ(m_no_fuse->nbody, 3) << "Expecting a world body and two others";
 
+  EXPECT_EQ(m_no_fuse->body_contype[2], 1);
+  EXPECT_EQ(m_no_fuse->body_conaffinity[2], 1);
+  EXPECT_EQ(m_fuse->body_contype[1], 1);
+  EXPECT_EQ(m_fuse->body_conaffinity[1], 1);
+
+  EXPECT_EQ(m_no_fuse->body_bvhnum[2], 3);
+  EXPECT_EQ(m_fuse->body_bvhnum[1], 3);
+
   mjData* d_fuse = mj_makeData(m_fuse);
   mjData* d_no_fuse = mj_makeData(m_no_fuse);
 
   mj_step(m_fuse, d_fuse);
   mj_step(m_no_fuse, d_no_fuse);
 
-  EXPECT_THAT(d_fuse->qvel[0], DoubleNear(d_no_fuse->qvel[0], 1e-17))
+  EXPECT_THAT(d_fuse->qvel[0], DoubleNear(d_no_fuse->qvel[0], 2e-17))
       << "Velocity should be the same after 1 step";
   EXPECT_NE(d_fuse->qvel[0], 0);
 
@@ -393,6 +461,45 @@ TEST_F(DiscardVisualTest, DiscardVisualEquivalent) {
   mj_deleteModel(model2);
   mj_deleteData(d1);
   mj_deleteData(d2);
+}
+
+// ------------- test lengthrange ----------------------------------------------
+
+using LengthRangeTest = MujocoTest;
+
+TEST_F(LengthRangeTest, LengthRangeThreading) {
+  char error[1024];
+  size_t error_sz = 1024;
+  std::string field = "";
+
+  static const char* const kLengthrangePath =
+      "user/testdata/lengthrange.xml";
+
+  const std::string xml_path1 = GetTestDataFilePath(kLengthrangePath);
+  mjSpec* spec = mj_parseXML(xml_path1.c_str(), 0, error, error_sz);
+  EXPECT_THAT(spec, NotNull()) << error;
+  mjModel* model1 = mj_compile(spec, 0);
+  EXPECT_THAT(model1, NotNull()) << error;
+
+  // model is such that the lengthrange for first actuator is [1, sqrt(5)]
+  EXPECT_THAT(model1->actuator_lengthrange[0], DoubleNear(1.0, 1e-3));
+  EXPECT_THAT(model1->actuator_lengthrange[1],
+              DoubleNear(std::sqrt(5.0), 1e-3));
+
+  // recompile without threads
+  ASSERT_EQ(spec->usethread, 1);
+  spec->usethread = 0;
+  mjModel* model2 = mj_compile(spec, 0);
+  EXPECT_THAT(model2, NotNull()) << error;
+
+  // expect threaded and unthreaded models to be identical
+  EXPECT_LE(CompareModel(model1, model2, field), 0)
+      << "Threaded and unthreaded lengthrange models are different!\n"
+      << "Different field: " << field << '\n';
+
+  mj_deleteModel(model1);
+  mj_deleteModel(model2);
+  mj_deleteSpec(spec);
 }
 
 }  // namespace

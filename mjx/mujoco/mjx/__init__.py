@@ -16,12 +16,7 @@
 
 # pylint:disable=g-importing-member
 from mujoco.mjx._src.collision_driver import collision
-from mujoco.mjx._src.collision_driver import get_params
-from mujoco.mjx._src.collision_driver import ncon
-from mujoco.mjx._src.constraint import count_constraints
 from mujoco.mjx._src.constraint import make_constraint
-from mujoco.mjx._src.device import device_get_into
-from mujoco.mjx._src.device import device_put
 from mujoco.mjx._src.forward import euler
 from mujoco.mjx._src.forward import forward
 from mujoco.mjx._src.forward import fwd_acceleration
@@ -44,10 +39,22 @@ from mujoco.mjx._src.smooth import crb
 from mujoco.mjx._src.smooth import factor_m
 from mujoco.mjx._src.smooth import kinematics
 from mujoco.mjx._src.smooth import rne
+from mujoco.mjx._src.smooth import tendon
 from mujoco.mjx._src.smooth import transmission
 from mujoco.mjx._src.solver import solve
 from mujoco.mjx._src.support import full_m
+from mujoco.mjx._src.support import id2name
 from mujoco.mjx._src.support import is_sparse
 from mujoco.mjx._src.support import mul_m
+from mujoco.mjx._src.support import name2id
 from mujoco.mjx._src.test_util import benchmark
 from mujoco.mjx._src.types import *
+
+#-----------------------------------------------------------------
+from mujoco.mjx._src.forward_cuda import step_cuda1
+from mujoco.mjx._src.forward_cuda import step_cuda2
+from mujoco.mjx._src.forward_cuda import step_cuda3
+from mujoco.mjx._src.collision_driver_cuda import collision
+from mujoco.mjx._src import mjx_cuda_collision
+#-----------------------------------------------------------------
+from . import _mjx_cuda_collision

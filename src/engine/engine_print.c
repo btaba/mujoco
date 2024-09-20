@@ -25,6 +25,7 @@
 #include <mujoco/mjxmacro.h>
 #include "engine/engine_core_constraint.h"
 #include "engine/engine_io.h"
+#include "engine/engine_name.h"
 #include "engine/engine_support.h"
 #include "engine/engine_util_errmem.h"
 #include "engine/engine_util_misc.h"
@@ -333,7 +334,7 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
   const int* object_class;
 
 #define X(type, name, num, sz)                                              \
-  if (&m->num == object_class && (strncmp(#name, "name_", 5) != 0) && sz) { \
+  if (&m->num == object_class && (strncmp(#name, "name_", 5) != 0) && sz > 0) { \
     const char* format = _Generic(*m->name,                                 \
                                   double:  float_format,                    \
                                   float:   float_format,                    \
@@ -978,27 +979,6 @@ void mj_printFormattedData(const mjModel* m, mjData* d, const char* filename,
   printArray("QLDIAGINV", m->nv, 1, d->qLDiagInv, fp, float_format);
   printArray("QLDIAGSQRTINV", m->nv, 1, d->qLDiagSqrtInv, fp, float_format);
 
-  // D_rownnz
-  fprintf(fp, NAME_FORMAT, "D_rownnz");
-  for (int i = 0; i < m->nv; i++) {
-    fprintf(fp, " %d", d->D_rownnz[i]);
-  }
-  fprintf(fp, "\n\n");
-
-  // D_rowadr
-  fprintf(fp, NAME_FORMAT, "D_rowadr");
-  for (int i = 0; i < m->nv; i++) {
-    fprintf(fp, " %d", d->D_rowadr[i]);
-  }
-  fprintf(fp, "\n\n");
-
-  // D_colind
-  fprintf(fp, NAME_FORMAT, "D_colind");
-  for (int i = 0; i < m->nD; i++) {
-    fprintf(fp, " %d", d->D_colind[i]);
-  }
-  fprintf(fp, "\n\n");
-
   // B_rownnz
   fprintf(fp, NAME_FORMAT, "B_rownnz");
   for (int i = 0; i < m->nbody; i++) {
@@ -1020,6 +1000,69 @@ void mj_printFormattedData(const mjModel* m, mjData* d, const char* filename,
   }
   fprintf(fp, "\n\n");
 
+  // C_rownnz
+  fprintf(fp, NAME_FORMAT, "C_rownnz");
+  for (int i = 0; i < m->nv; i++) {
+    fprintf(fp, " %d", d->C_rownnz[i]);
+  }
+  fprintf(fp, "\n\n");
+
+  // C_rowadr
+  fprintf(fp, NAME_FORMAT, "C_rowadr");
+  for (int i = 0; i < m->nv; i++) {
+    fprintf(fp, " %d", d->C_rowadr[i]);
+  }
+  fprintf(fp, "\n\n");
+
+  // C_colind
+  fprintf(fp, NAME_FORMAT, "C_colind");
+  for (int i = 0; i < m->nC; i++) {
+    fprintf(fp, " %d", d->C_colind[i]);
+  }
+  fprintf(fp, "\n\n");
+
+  // mapM2C
+  fprintf(fp, NAME_FORMAT, "mapM2C");
+  for (int i = 0; i < m->nC; i++) {
+    fprintf(fp, " %d", d->mapM2C[i]);
+  }
+  fprintf(fp, "\n\n");
+
+  // D_rownnz
+  fprintf(fp, NAME_FORMAT, "D_rownnz");
+  for (int i = 0; i < m->nv; i++) {
+    fprintf(fp, " %d", d->D_rownnz[i]);
+  }
+  fprintf(fp, "\n\n");
+
+  // D_rowadr
+  fprintf(fp, NAME_FORMAT, "D_rowadr");
+  for (int i = 0; i < m->nv; i++) {
+    fprintf(fp, " %d", d->D_rowadr[i]);
+  }
+  fprintf(fp, "\n\n");
+
+  // D_colind
+  fprintf(fp, NAME_FORMAT, "D_colind");
+  for (int i = 0; i < m->nD; i++) {
+    fprintf(fp, " %d", d->D_colind[i]);
+  }
+  fprintf(fp, "\n\n");
+
+  // mapM2D
+  fprintf(fp, NAME_FORMAT, "mapM2D");
+  for (int i = 0; i < m->nD; i++) {
+    fprintf(fp, " %d", d->mapM2D[i]);
+  }
+  fprintf(fp, "\n\n");
+
+  // mapD2M
+  fprintf(fp, NAME_FORMAT, "mapD2M");
+  for (int i = 0; i < m->nM; i++) {
+    fprintf(fp, " %d", d->mapD2M[i]);
+  }
+  fprintf(fp, "\n\n");
+
   // print qDeriv
   mju_sparse2dense(M, d->qDeriv, m->nv, m->nv, d->D_rownnz, d->D_rowadr, d->D_colind);
   printArray("QDERIV", m->nv, m->nv, M, fp, float_format);
@@ -1033,11 +1076,31 @@ void mj_printFormattedData(const mjModel* m, mjData* d, const char* filename,
   fprintf(fp, "CONTACT\n");
   for (int i=0; i < d->ncon; i++) {
     fprintf(fp, "  %d:\n     dim           %d\n", i, d->contact[i].dim);
-    fprintf(fp, "     gfev          %d %d %d %d : %d %d %d %d\n",
-            d->contact[i].geom[0], d->contact[i].flex[0],
-            d->contact[i].elem[0], d->contact[i].vert[0],
-            d->contact[i].geom[1], d->contact[i].flex[1],
-            d->contact[i].elem[1], d->contact[i].vert[1]);
+    int g1 = d->contact[i].geom[0];
+    int g2 = d->contact[i].geom[1];
+
+    // special case for geom-geom contacts
+    if (g1 > -1 && g2 > -1) {
+      fprintf(fp, "     geoms         ");
+      const char* geom1 = mj_id2name(m, mjOBJ_GEOM, g1);
+      const char* geom2 = mj_id2name(m, mjOBJ_GEOM, g2);
+      if (geom1) {
+        fprintf(fp, "%s : ", geom1);
+      } else {
+        fprintf(fp, "%d : ", g1);
+      }
+      if (geom2) {
+        fprintf(fp, "%s\n", geom2);
+      } else {
+        fprintf(fp, "%d\n", g2);
+      }
+    } else {
+      fprintf(fp, "     gfev          %d %d %d %d : %d %d %d %d\n",
+              d->contact[i].geom[0], d->contact[i].flex[0],
+              d->contact[i].elem[0], d->contact[i].vert[0],
+              d->contact[i].geom[1], d->contact[i].flex[1],
+              d->contact[i].elem[1], d->contact[i].vert[1]);
+    }
     fprintf(fp, "     exclude       %d\n     efc_address   %d\n",
             d->contact[i].exclude, d->contact[i].efc_address);
     printVector("     solref       ", d->contact[i].solref, mjNREF, fp, float_format);

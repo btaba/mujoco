@@ -43,12 +43,14 @@ _LS_ITERATIONS = flags.DEFINE_integer(
 _OUTPUT = flags.DEFINE_enum(
     'output', 'text', ['text', 'tsv'], 'format to print results'
 )
+_KEYFRAME = flags.DEFINE_string('keyframe', None, 'the keyframe to load')
 
 
 def _main(argv: Sequence[str]):
   """Runs testpeed function."""
-  base_path = _BASE_PATH.value or epath.resource_path('mujoco.mjx')
-  f = base_path / 'test_data' / _MJCF.value
+  path = epath.resource_path('mujoco.mjx') / 'test_data'
+  path = _BASE_PATH.value or path
+  f = epath.Path(path) / _MJCF.value
   m = mujoco.MjModel.from_xml_path(f.as_posix())
 
   print(f'Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep:.3f}...')
@@ -60,6 +62,7 @@ def _main(argv: Sequence[str]):
       _SOLVER.value,
       _ITERATIONS.value,
       _LS_ITERATIONS.value,
+      _KEYFRAME.value,
   )
 
   name = argv[0]

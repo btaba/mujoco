@@ -1,8 +1,8 @@
-===============
-Python Bindings
-===============
+======
+Python
+======
 
-Starting with version 2.1.2, MuJoCo comes with native Python bindings that are developed in C++ using
+MuJoCo comes with native Python bindings that are developed in C++ using
 `pybind11 <https://pybind11.readthedocs.io/>`__. The Python API is consistent with the underlying C API. This leads to
 some non-Pythonic code structure (e.g. order of function arguments), but it has the benefit that the
 :doc:`API documentation<APIreference/index>` is applicable to both languages.
@@ -12,23 +12,22 @@ low-level bindings that are meant to give as close to a direct access to the MuJ
 order to provide an API and semantics that developers would expect in a typical Python library, the bindings
 deliberately diverge from the raw MuJoCo API in a number of places, which are documented throughout this page.
 
-Google DeepMind’s `dm_control <https://github.com/google-deepmind/dm_control>`__ reinforcement learning library (which
-prior to version 1.0.0 implemented its own MuJoCo bindings based on ``ctypes``) has been updated to depend on the
-``mujoco`` package and continues to be supported by Google DeepMind. Changes in dm_control should be largely transparent
-to users of previous versions, however code that depended directly on its low-level API may need to be updated. Consult
-the `migration guide <https://github.com/google-deepmind/dm_control/blob/main/migration_guide_1.0.md>`__ for detail.
+Google DeepMind’s `dm_control <https://github.com/google-deepmind/dm_control>`__ reinforcement learning library depends
+on the ``mujoco`` package and continues to be supported by Google DeepMind. For code that depends on dm_control versions
+prior to 1.0.0, consult the
+`migration guide <https://github.com/google-deepmind/dm_control/blob/main/migration_guide_1.0.md>`__.
 
-For mujoco-py users, we include :ref:`notes <PyMjpy_migration>` below to aid migration.
+For mujoco-py users, we include :ref:`migration notes <PyMjpy_migration>` below.
 
 .. _PyNotebook:
 
 Tutorial notebook
 =================
 
-A MuJoCo tutorial using the Python bindings is available here: |colab|
+A MuJoCo tutorial using the Python bindings is available here: |mjcolab|
 
-.. |colab| image:: https://colab.research.google.com/assets/colab-badge.svg
-           :target: https://colab.research.google.com/github/google-deepmind/mujoco/blob/main/python/tutorial.ipynb
+.. |mjcolab| image:: https://colab.research.google.com/assets/colab-badge.svg
+             :target: https://colab.research.google.com/github/google-deepmind/mujoco/blob/main/python/tutorial.ipynb
 
 .. _PyInstallation:
 
@@ -55,8 +54,8 @@ use cases are supported:
 
 .. _PyViewerApp:
 
-Standalone application
-----------------------
+Standalone app
+--------------
 
 - ``python -m mujoco.viewer`` launches an empty visualization session, where a model can be loaded by drag-and-drop.
 - ``python -m mujoco.viewer --mjcf=/path/to/some/mjcf.xml`` launches a visualization session for the specified
@@ -466,23 +465,147 @@ Alternatively, if a callback is implemented in a native dynamic library, users c
 it to ``mujoco.set_mjcb_foo``. The bindings will then retrieve the underlying function pointer and assign it directly to
 the raw callback pointer, and the GIL will **not** be acquired each time the callback is entered.
 
-.. _PySample:
+.. _PyModelEdit:
 
-Open-loop rollouts
-==================
+Model editing
+=============
+The :doc:`Model Editing<programming/modeledit>` framework which allows for procedural model manipulation is exposed
+via Python. In many ways this API is conceptually similar to ``dm_control``'s
+`PyMJCF module <https://github.com/google-deepmind/dm_control/tree/main/dm_control/mjcf#readme>`__, where ``MjSpec``
+plays the role of ``mjcf_model``. The largest difference between these two APIs is speed. Native model manipulation via
+``MjSpec`` is around ~100x faster than PyMJCF.
 
-We include a code sample showing how to add additional C/C++ functionality, exposed as a Python module via pybind11. The
-sample, implemented in `rollout.cc <https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/rollout.cc>`__
-and wrapped in `rollout.py <https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/rollout.py>`__,
-implements a common use case where tight loops implemented outside of Python are beneficial: rolling out a trajectory
-(i.e., calling ``mj_step()`` in a loop), given an intial state and sequence of controls, and returning subsequent states
-and sensor values. The basic usage form is
+Below is a simple example of how to use the model editing API. For more examples, please refer to
+`specs_test.py <https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/specs_test.py>`__.
+
+.. code-block:: python
+
+   import mujoco
+   spec = mujoco.MjSpec()
+   body = spec.worldbody.add_body()
+   body.pos = [1, 2, 3]
+   body.quat = [0, 1, 0, 0]
+   geom = body.add_geom()
+   geom.name = 'my_geom'
+   geom.type = mujoco.mjtGeom.mjGEOM_SPHERE
+   geom.size[0] = 1
+   geom.rgba = [1, 0, 0, 1]
+   ...
+   model = spec.compile()
+
+.. admonition:: Missing features
+   :class: attention
+
+   We are aware of multiple missing features in the Python API, including:
+
+   - Convenient constructors like:
+     |br| :python:`geom = body.add_geom(name='my_geom', size=[1, 1, 1], rgba=[1, 0, 0, 1])`
+   - Better tree traversal utilities like :python:`children = body.children()` etc.
+   - PyMJCF's notion of "binding", allowing access to :ref:`mjModel` and :ref:`mjData` values via the associated ``mjs``
+     elements.
+
+   There are certainly other missing features that we are not aware of. Please contact us on GitHub with feature
+   requests or bug reports and we will prioritize accordingly.
+
+
+.. _PyBuild:
+
+Building from source
+====================
+
+.. note::
+    Building from source is only necessary if you are modifying the
+    Python bindings (or are trying to run on exceptionally old Linux systems).
+    If that's not the case, then we recommend installing the prebuilt binaries
+    from PyPI.
+
+1. Make sure you have CMake and a C++17 compiler installed.
+
+2. Download the `latest binary release <https://github.com/google-deepmind/mujoco/releases>`__
+   from GitHub. On macOS, the download corresponds to a DMG file which you can mount by
+   double-clicking or running ``hdiutil attach <dmg_file>``.
+
+3. Clone the entire ``mujoco`` repository from GitHub and ``cd`` into the python
+   directory:
+
+   .. code-block:: shell
+
+      git clone https://github.com/google-deepmind/mujoco.git
+      cd mujoco/python
+
+4. Create a virtual environment:
+
+   .. code-block:: shell
+
+      python3 -m venv /tmp/mujoco
+      source /tmp/mujoco/bin/activate
+
+5. Generate a `source distribution <https://packaging.python.org/en/latest/glossary/#term-Source-Distribution-or-sdist>`__
+   tarball with the ``make_sdist.sh`` script.
+
+   .. code-block:: shell
+
+      bash make_sdist.sh
+
+   The ``make_sdist.sh`` script generates additional C++ header files that are
+   needed to build the bindings, and also pulls in required files from elsewhere
+   in the repository outside the ``python`` directory into the sdist. Upon
+   completion, the script will create a ``dist`` directory with a
+   ``mujoco-x.y.z.tar.gz`` file (where ``x.y.z`` is the version number).
+
+6. Use the generated source distribution to build and install the bindings.
+   You'll need to specify the path to the MuJoCo library you downloaded earlier
+   in the ``MUJOCO_PATH`` environment variable, and the path to the MuJoCo
+   plugin directory in the ``MUJOCO_PLUGIN_PATH`` environment variable.
+
+   .. note::
+      For macOS, the files need to be extracted from the DMG.
+      Once you mounted it as in step 2, the ``mujoco.framework`` directory can be found in ``/Volumes/MuJoCo``,
+      and the plugins directory can be found in ``/Volumes/MuJoCo/MuJoCo.app/Contents/MacOS/mujoco_plugin``.
+      Those two directories can be copied out somewhere convenient, or you can use
+      ``MUJOCO_PATH=/Volumes/MuJoCo MUJOCO_PLUGIN_PATH=/Volumes/MuJoCo/MuJoCo.app/Contents/MacOS/mujoco_plugin``.
+
+   .. code-block:: shell
+
+      cd dist
+      MUJOCO_PATH=/PATH/TO/MUJOCO \
+      MUJOCO_PLUGIN_PATH=/PATH/TO/MUJOCO_PLUGIN \
+      pip install mujoco-x.y.z.tar.gz
+
+The Python bindings should now be installed! To check that they've been
+successfully installed, ``cd`` outside of the ``mujoco`` directory and run
+``python -c "import mujoco"``.
+
+.. tip::
+   As a reference, a working build configuration can be found in MuJoCo's
+   `continuous integration setup <https://github.com/google-deepmind/mujoco/blob/main/.github/workflows/build.yml>`_ on
+   GitHub.
+
+
+.. _PyModule:
+
+Modules
+=======
+
+The ``mujoco`` package contains two sub-modules: ``mujoco.rollout`` and ``mujoco.minimize``
+
+.. _PyRollout:
+
+rollout
+-------
+
+``mujoco.rollout`` shows how to add additional C/C++ functionality, exposed as a Python module via pybind11. It is
+implemented in `rollout.cc <https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/rollout.cc>`__
+and wrapped in `rollout.py <https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/rollout.py>`__. The module
+performs a common functionality where tight loops implemented outside of Python are beneficial: rolling out a trajectory
+(i.e., calling :ref:`mj_step` in a loop), given an intial state and sequence of controls, and returning subsequent
+states and sensor values. The basic usage form is
 
 .. code-block:: python
 
    state, sensordata = rollout.rollout(model, data, initial_state, control)
 
-``initial_state`` is a ``nroll x nstate`` array, with ``nroll`` initial states of size ``nstate``, where
+``initial_state`` is an ``nroll x nstate`` array, with ``nroll`` initial states of size ``nstate``, where
 ``nstate = mj_stateSize(model, mjtState.mjSTATE_FULLPHYSICS)`` is the size of the
 :ref:`full physics state<geFullPhysics>`. ``control`` is a ``nroll x nstep x ncontrol`` array of controls. Controls are
 by default the ``mjModel.nu`` standard actuators, but any combination of :ref:`user input<geInput>` arrays can be
@@ -499,10 +622,47 @@ the ``test_threading`` function in
 `rollout_test.py <https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/rollout_test.py>`__ for an example
 of threaded operation (and more generally for usage examples).
 
+.. _PyMinimize:
+
+minimize
+--------
+
+This module contains optimization-related utilities.
+
+The ``minimize.least_squares()`` function implements a nonlinear Least Squares optimizer solving sequential
+Quadratic Programs with :ref:`mju_boxQP`. It is documented in the associated notebook: |lscolab|
+
+.. |lscolab| image:: https://colab.research.google.com/assets/colab-badge.svg
+             :target: https://colab.research.google.com/github/google-deepmind/mujoco/blob/main/python/least_squares.ipynb
+
+
+
+
+.. _PyUtility:
+
+Utilities
+=========
+
+The `python/mujoco <https://github.com/google-deepmind/mujoco/tree/main/python/mujoco>`__ directory also contains
+utility scripts.
+
+
+.. _PyMsh2obj:
+
+msh2obj.py
+----------
+
+The `msh2obj.py <https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/msh2obj.py>`__ script converts the
+:ref:`legacy .msh format<legacy-msh-docs>` for surface meshes (different from the possibly-volumetric
+:ref:`gmsh format<gmsh-file-docs>` also using .msh), to OBJ files. The legacy format is deprecated and will be removed
+in a future release. Please convert all legacy files to OBJ.
+
+
+
 .. _PyMjpy_migration:
 
-Migration from mujoco-py
-========================
+mujoco-py migration
+===================
 
 In mujoco-py, the main entry point is the `MjSim <https://github.com/openai/mujoco-py/blob/master/mujoco_py/mjsim.pyx>`_
 class.  Users construct a stateful ``MjSim`` instance from an MJCF model (similar to ``dm_control.Physics``), and this
@@ -548,74 +708,3 @@ non-exhaustive list of specific mujoco-py features:
    that mujoco-py’s implementation has a convenient extra feature, whereby the pose (as determined by ``sim.data``’s
    state) is transformed to a keyframe that’s added to the model before saving.  This extra feature is not currently
    available in ``mujoco``.
-
-
-.. _PyBuild:
-
-Building from source
-====================
-
-.. note::
-    Building from source is only necessary if you are modifying the
-    Python bindings (or are trying to run on exceptionally old Linux systems).
-    If that's not the case, then we recommend installing the prebuilt binaries
-    from PyPI.
-
-1. Make sure you have CMake and a C++17 compiler installed.
-
-2. Download the `latest binary release <https://github.com/google-deepmind/mujoco/releases>`__
-   from GitHub. On macOS, the download corresponds to a DMG file from which you
-   can drag ``MuJoCo.app`` into your ``/Applications`` folder.
-
-3. Clone the entire ``mujoco`` repository from GitHub and ``cd`` into the python
-   directory:
-
-   .. code-block:: shell
-
-      git clone https://github.com/google-deepmind/mujoco.git
-      cd mujoco/python
-
-4. Create a virtual environment:
-
-   .. code-block:: shell
-
-      python3 -m venv /tmp/mujoco
-      source /tmp/mujoco/bin/activate
-
-5. Generate a `source distribution <https://packaging.python.org/en/latest/glossary/#term-Source-Distribution-or-sdist>`__
-   tarball with the ``make_sdist.sh`` script.
-
-   .. code-block:: shell
-
-      cd python
-      bash make_sdist.sh
-
-   The ``make_sdist.sh`` script generates additional C++ header files that are
-   needed to build the bindings, and also pulls in required files from elsewhere
-   in the repository outside the ``python`` directory into the sdist. Upon
-   completion, the script will create a ``dist`` directory with a
-   ``mujoco-x.y.z.tar.gz`` file (where ``x.y.z`` is the version number).
-
-6. Use the generated source distribution to build and install the bindings.
-   You'll need to specify the path to the MuJoCo library you downloaded earlier
-   in the ``MUJOCO_PATH`` environment variable.
-
-   .. note::
-      For macOS, this can be the path to a directory that contains the
-      ``mujoco.framework``. In particular, you can set
-      ``MUJOCO_PATH=/Applications/MuJoCo.app`` if you installed MuJoCo as
-      suggested in step 1.
-
-   .. code-block:: shell
-
-      cd dist
-      MUJOCO_PATH=/PATH/TO/MUJOCO MUJOCO_PLUGIN_PATH=/PATH/TO/MUJOCO_PLUGIN pip install mujoco-x.y.z.tar.gz
-
-The Python bindings should now be installed! To check that they've been
-successfully installed, ``cd`` outside of the ``mujoco`` directory and run
-``python -c "import mujoco"``.
-
-.. tip::
-   As a reference, a working build configuration can be found in MuJoCo's
-   `continuous integration setup <https://github.com/google-deepmind/mujoco/blob/main/.github/workflows/build.yml>`_ on
-   GitHub.

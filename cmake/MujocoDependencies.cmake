@@ -27,7 +27,7 @@ set(MUJOCO_DEP_VERSION_tinyobjloader
     CACHE STRING "Version of `tinyobjloader` to be fetched."
 )
 set(MUJOCO_DEP_VERSION_MarchingCubeCpp
-    5b79e5d6bded086a0abe276a4b5a69fc17ae9bf1
+    f03a1b3ec29b1d7d865691ca8aea4f1eb2c2873d
     CACHE STRING "Version of `MarchingCubeCpp` to be fetched."
 )
 set(MUJOCO_DEP_VERSION_ccd
@@ -39,22 +39,22 @@ set(MUJOCO_DEP_VERSION_qhull
     CACHE STRING "Version of `qhull` to be fetched."
 )
 set(MUJOCO_DEP_VERSION_Eigen3
-    2a9055b50ed22101da7d77e999b90ed50956fe0b
+    33d0937c6bdf5ec999939fb17f2a553183d14a74
     CACHE STRING "Version of `Eigen3` to be fetched."
 )
 
 set(MUJOCO_DEP_VERSION_abseil
-    2f9e432cce407ce0ae50676696666f33a77d42ac # LTS 20240116.1
+    4447c7562e3bc702ade25105912dce503f0c4010 # LTS 20240722.0
     CACHE STRING "Version of `abseil` to be fetched."
 )
 
 set(MUJOCO_DEP_VERSION_gtest
-    f8d7d77c06936315286eb55f8de22cd23c188571 # v1.14.0
+    b514bdc898e2951020cbdca1304b75f5950d1f59 # v1.15.2
     CACHE STRING "Version of `gtest` to be fetched."
 )
 
 set(MUJOCO_DEP_VERSION_benchmark
-    e45585a4b8e75c28479fa4107182c28172799640 # v1.8.3
+    7c8ed6b082aa3c7a3402f18e50da4480421d08fd # v1.8.4
     CACHE STRING "Version of `benchmark` to be fetched."
 )
 

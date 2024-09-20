@@ -1,12 +1,8 @@
 <mujoco model="convex_convex">
-  <custom>
-    <numeric data="0.2" name="baumgarte_erp"/>
-    <numeric data="0.5" name="elasticity"/>
-  </custom>
   <default>
     <geom friction="0.5 0.0 0.0"/>
   </default>
-  <option solver="CG" iterations="6" ls_iterations="6"/>
+  <option solver="Newton" iterations="10" ls_iterations="6"/>
   <asset>
       <mesh name="tetrahedron" file="meshes/tetrahedron.stl" scale="0.4 0.4 0.4" />
       <mesh name="dodecahedron" file="meshes/dodecahedron.stl" scale="0.04 0.04 0.04" />
@@ -41,6 +37,12 @@
       <joint axis="1 0 0" name="free4" pos="0 0 0" type="free"/>
       <geom name="pyramid" pos="0 0 0" type="mesh" mesh="pyramid" rgba="1 0 1 1"/>
     </body>
+    
+      </worldbody>
 
-  </worldbody>
+<keyframe>
+<key qpos='-0.15669 2.34078 0.181025 0.850982 -0.524353 0.0143301 -0.0260361 0.723905 2.5824 0.319558 0.264851 0.195974 0.942366 -0.0582708 0.621802 1.67144 0.20308 0.590149 0.595709 -0.380658 -0.389814 -0.605047 1.88987 0.232495 -0.739036 0.638898 -0.197034 0.08254'/>
+
+</keyframe>
+
 </mujoco>

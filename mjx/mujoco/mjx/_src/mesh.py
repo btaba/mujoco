@@ -15,14 +15,19 @@
 """Mesh processing."""
 
 import collections
-import dataclasses
 import itertools
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Tuple, Union
 import warnings
 
+import jax
+from jax import numpy as jp
 import mujoco
+from mujoco.mjx._src import math
 # pylint: disable=g-importing-member
-from mujoco.mjx._src.types import GeomType
+from mujoco.mjx._src.collision_types import ConvexInfo
+from mujoco.mjx._src.collision_types import GeomInfo
+from mujoco.mjx._src.collision_types import HFieldInfo
+from mujoco.mjx._src.types import ConvexMesh
 from mujoco.mjx._src.types import Model
 # pylint: enable=g-importing-member
 import numpy as np
@@ -30,37 +35,8 @@ from scipy import spatial
 import trimesh
 
 
-_BOX_CORNERS = list(itertools.product((-1, 1), (-1, 1), (-1, 1)))
-# pyformat: disable
-# Rectangular box faces using a counter-clockwise winding order convention.
-_BOX_FACES = [
-    0, 4, 5, 1,  # left
-    0, 2, 6, 4,  # bottom
-    6, 7, 5, 4,  # front
-    2, 3, 7, 6,  # right
-    1, 5, 7, 3,  # top
-    0, 1, 3, 2,  # back
-]
-# pyformat: enable
-_MAX_HULL_FACE_VERTICES = 20
-_CONVEX_CACHE: Dict[Tuple[int, int], Dict[str, np.ndarray]] = {}
-_DERIVED_ARGS = [
-    'geom_convex_face',
-    'geom_convex_vert',
-    'geom_convex_edge_dir',
-    'geom_convex_facenormal',
-    'geom_convex_edge',
-    'geom_convex_edge_face_normal',
-]
-DERIVED = {(Model, d) for d in _DERIVED_ARGS}
-
-
-def _box(size: np.ndarray):
-  """Creates a mesh for a box with rectangular faces."""
-  box_corners = np.array(_BOX_CORNERS)
-  vert = box_corners * size.reshape(-1, 3)
-  face = np.array([_BOX_FACES]).reshape(-1, 4)
-  return vert, face
+_MAX_HULL_FACE_VERTICES = 100
+_MAX_HULL_FACE = 64
 
 
 def _get_face_norm(vert: np.ndarray, face: np.ndarray) -> np.ndarray:
@@ -170,16 +146,9 @@ def _convex_hull_2d(points: np.ndarray, normal: np.ndarray) -> np.ndarray:
   return hull_point_idx
 
 
-@dataclasses.dataclass
-class MeshInfo:
-  name: str
-  vert: np.ndarray
-  face: np.ndarray
-  convex_vert: Optional[np.ndarray]
-  convex_face: Optional[np.ndarray]
-
-
-def _merge_coplanar(tm: trimesh.Trimesh, mesh_info: MeshInfo) -> np.ndarray:
+def _merge_coplanar(
+    m: Union[mujoco.MjModel, Model], tm: trimesh.Trimesh, meshid: int
+) -> np.ndarray:
   """Merges coplanar facets."""
   if not tm.facets:
     return tm.faces.copy()  # no facets
@@ -204,9 +173,11 @@ def _merge_coplanar(tm: trimesh.Trimesh, mesh_info: MeshInfo) -> np.ndarray:
 
     # resize faces that exceed max polygon vertices
     if face.shape[0] > _MAX_HULL_FACE_VERTICES:
+      name = m.names[m.name_meshadr[meshid]:]
+      name = name[:name.find(b'\x00')].decode('utf-8')
       warnings.warn(
-          f'Mesh "{mesh_info.name}" has a coplanar face with more than'
-          f' {_MAX_HULL_FACE_VERTICES} vertices. This may lead to performance '
+          f'Mesh "{name}" has a coplanar face with more than '
+          f'{_MAX_HULL_FACE_VERTICES} vertices. This may lead to performance '
           'issues and inaccuracies in collision detection. Consider '
           'decimating the mesh.'
       )
@@ -231,106 +202,203 @@ def _merge_coplanar(tm: trimesh.Trimesh, mesh_info: MeshInfo) -> np.ndarray:
   return np.concatenate([faces, facets])
 
 
-def _mesh_info(
-    m: mujoco.MjModel,
-) -> List[MeshInfo]:
-  """Extracts mesh info from MjModel."""
-  mesh_infos = []
-  for i in range(m.nmesh):
-    name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_MESH.value, i)
-
-    last = (i + 1) >= m.nmesh
-    face_start = m.mesh_faceadr[i]
-    face_end = m.mesh_faceadr[i + 1] if not last else m.mesh_face.shape[0]
-    face = m.mesh_face[face_start:face_end]
-
-    vert_start = m.mesh_vertadr[i]
-    vert_end = m.mesh_vertadr[i + 1] if not last else m.mesh_vert.shape[0]
-    vert = m.mesh_vert[vert_start:vert_end]
-
-    graphadr = m.mesh_graphadr[i]
-    if graphadr < 0:
-      mesh_infos.append(MeshInfo(name, vert, face, None, None))
-      continue
-
-    graph = m.mesh_graph[graphadr:]
-    numvert, numface = graph[0], graph[1]
-
-    # unused vert_edgeadr
-    # vert_edgeadr = graph[2 : numvert + 2]
-    last_idx = numvert + 2
-
-    vert_globalid = graph[last_idx : last_idx + numvert]
-    last_idx += numvert
-
-    # unused edge_localid
-    # edge_localid = graph[last_idx : last_idx + numvert + 3 * numface]
-    last_idx += numvert + 3 * numface
-
-    face_globalid = graph[last_idx : last_idx + 3 * numface]
-    face_globalid = face_globalid.reshape((numface, 3))
-
-    convex_vert = vert[vert_globalid]
-    vertex_map = dict(zip(vert_globalid, np.arange(vert_globalid.shape[0])))
-    convex_face = np.vectorize(vertex_map.get)(face_globalid)
-    mesh_infos.append(MeshInfo(name, vert, face, convex_vert, convex_face))
-
-  return mesh_infos
-
-
-def _geom_mesh_kwargs(
-    mesh_info: MeshInfo,
-) -> Dict[str, np.ndarray]:
-  """Generates convex mesh attributes for mjx.Model."""
-  tm_convex = trimesh.Trimesh(
-      vertices=mesh_info.convex_vert, faces=mesh_info.convex_face
+def box(info: GeomInfo) -> ConvexInfo:
+  """Creates a box with rectangular faces."""
+  vert = np.array(
+      list(itertools.product((-1, 1), (-1, 1), (-1, 1))), dtype=float
   )
+  # pyformat: disable
+  # rectangular box faces using a counter-clockwise winding order convention:
+  face = np.array(
+      [
+          0, 4, 5, 1,  # left
+          0, 2, 6, 4,  # bottom
+          6, 7, 5, 4,  # front
+          2, 3, 7, 6,  # right
+          1, 5, 7, 3,  # top
+          0, 1, 3, 2,  # back
+      ]
+  ).reshape((-1, 4))
+  # pyformat: enable
+  face_normal = _get_face_norm(vert, face)
+  edge, edge_face_normal = _get_edge_normals(face, face_normal)
+  edge_dir = _get_unique_edge_dir(vert, face)
+  face = vert[face]  # materialize full nface x nvert matrix
+
+  c = ConvexInfo(
+      info.pos,
+      info.mat,
+      info.size,
+      vert,
+      face,
+      face_normal,
+      edge,
+      edge_face_normal,
+      edge_dir,
+  )
+  c = jax.tree_util.tree_map(jp.array, c)
+  vert = jax.vmap(jp.multiply, in_axes=(None, 0))(c.vert, info.size)
+  face = jax.vmap(jp.multiply, in_axes=(None, 0))(c.face, info.size)
+  c = c.replace(vert=vert, face=face)
+
+  return c
+
+
+def convex(m: Union[mujoco.MjModel, Model], data_id: int) -> ConvexMesh:
+  """Processes a mesh for use in convex collision algorithms.
+
+  Args:
+    m: an MJX model
+    data_id: the mesh id to process
+
+  Returns:
+    a convex mesh
+  """
+  vert_beg = m.mesh_vertadr[data_id]
+  vert_end = m.mesh_vertadr[data_id + 1] if data_id < m.nmesh - 1 else None
+  vert = m.mesh_vert[vert_beg:vert_end]
+
+  graphadr = m.mesh_graphadr[data_id]
+  graph = m.mesh_graph[graphadr:]
+  graph_idx = 0
+
+  numvert, numface = graph[0], graph[1]
+  graph_idx += 2
+
+  # skip vert_edgeadr  (numvert,)
+  graph_idx += numvert
+  vert_globalid = graph[graph_idx : graph_idx + numvert]
+  graph_idx += numvert
+
+  # skip edge_localid  (numvert, 3)
+  graph_idx += numvert + 3 * numface
+  face_globalid = graph[graph_idx : graph_idx + 3 * numface].reshape((-1, 3))
+
+  vert = vert[vert_globalid]
+  vertex_map = dict(zip(vert_globalid, np.arange(vert_globalid.shape[0])))
+  face = np.vectorize(vertex_map.get)(face_globalid)
+
+  tm_convex = trimesh.Trimesh(vertices=vert, faces=face)
   vert = np.array(tm_convex.vertices)
-  face = _merge_coplanar(tm_convex, mesh_info)
-  facenormal = _get_face_norm(vert, face)
-  edge, edge_face_normal = _get_edge_normals(face, facenormal)
-  return {
-      'geom_convex_face': vert[face],
-      'geom_convex_face_vert_idx': face,
-      'geom_convex_vert': vert,
-      'geom_convex_edge_dir': _get_unique_edge_dir(vert, face),
-      'geom_convex_facenormal': facenormal,
-      'geom_convex_edge': edge,
-      'geom_convex_edge_face_normal': edge_face_normal,
-  }
+  face = _merge_coplanar(m, tm_convex, data_id)
+  face_normal = _get_face_norm(vert, face)
+  edge, edge_face_normal = _get_edge_normals(face, face_normal)
+  face = vert[face]  # materialize full nface x nvert matrix
+
+  c = ConvexMesh(
+      vert,
+      face,
+      face_normal,
+      edge,
+      edge_face_normal,
+  )
+
+  return jax.tree_util.tree_map(jp.array, c)
 
 
-def get(m: mujoco.MjModel) -> Dict[str, Sequence[Optional[np.ndarray]]]:
-  """Derives geom mesh attributes for mjx.Model from MjModel."""
-  kwargs = {k: [] for k in _DERIVED_ARGS}
-  mesh_infos = _mesh_info(m)
-  geom_con = m.geom_conaffinity | m.geom_contype
-  for geomid in range(m.ngeom):
-    mesh_info = None
-    dataid = m.geom_dataid[geomid]
-    if not geom_con[geomid]:
-      # ignore visual-only meshes
-      kwargs = {k: kwargs[k] + [None] for k in _DERIVED_ARGS}
-      continue
-    elif m.geom_type[geomid] == GeomType.BOX:
-      vert, face = _box(m.geom_size[geomid])
-      mesh_info = MeshInfo(
-          name='box',
-          vert=vert,
-          face=face,
-          convex_vert=vert,
-          convex_face=face,
-      )
-    elif dataid < 0:
-      kwargs = {k: kwargs[k] + [None] for k in _DERIVED_ARGS}
-      continue
+def hfield_prism(vert: jax.Array) -> ConvexInfo:
+  """Builds a hfield prism."""
+  # The first 3 vertices define the bottom triangle, and the next 3 vertices
+  # define the top triangle. The remaining triangles define the side of the
+  # prism.
+  face = np.array([
+      [0, 1, 2, 0],  # bottom
+      [3, 4, 5, 3],  # top
+      [0, 3, 5, 1],
+      [0, 2, 4, 3],
+      [2, 1, 5, 4],
+  ])
+  edges = np.array([
+      # bottom
+      [0, 1],
+      [1, 2],
+      [0, 2],
+      # top
+      [3, 4],
+      [3, 5],
+      [4, 5],
+      # sides
+      [0, 3],
+      [1, 5],
+      [2, 4],
+  ])
+  edge_face_norm = np.array([
+      # bottom
+      [0, 2],
+      [0, 4],
+      [0, 3],
+      # top
+      [1, 3],
+      [1, 2],
+      [1, 4],
+      # sides
+      [2, 3],
+      [2, 4],
+      [3, 4],
+  ])
 
-    mesh_info = mesh_info or mesh_infos[dataid]
-    vert, face = mesh_info.vert, mesh_info.face
-    key = (hash(vert.data.tobytes()), hash(face.data.tobytes()))
-    if key not in _CONVEX_CACHE:
-      _CONVEX_CACHE[key] = _geom_mesh_kwargs(mesh_info)
+  def get_face_norm(face):
+    # use ccw winding order convention, and avoid using the last vertex
+    edge0 = face[2, :] - face[1, :]
+    edge1 = face[0, :] - face[1, :]
+    return math.normalize(jp.cross(edge0, edge1))
 
-    kwargs = {k: kwargs[k] + [_CONVEX_CACHE[key][k]] for k in _DERIVED_ARGS}
+  centroid = jp.mean(vert, axis=0)
+  vert = vert - centroid
+  face = vert[face]
+  face_norm = jax.vmap(get_face_norm)(face)
 
-  return kwargs
+  c = ConvexInfo(
+      centroid,
+      jp.eye(3, dtype=float),
+      jp.ones(3),
+      vert,
+      face,
+      face_norm,
+      edges,
+      face_norm[edge_face_norm],
+      None,
+  )
+
+  return jax.tree_util.tree_map(jp.array, c)
+
+
+def hfield(m: Union[mujoco.MjModel, Model], data_id: int) -> HFieldInfo:
+  adr = m.hfield_adr[data_id]
+  nrow, ncol = m.hfield_nrow[data_id], m.hfield_ncol[data_id]
+  h = HFieldInfo(
+      jp.zeros(3, dtype=float),
+      jp.eye(3, dtype=float),
+      m.hfield_size[data_id],
+      nrow,
+      ncol,
+      m.hfield_data[adr : adr + nrow * ncol].reshape((ncol, nrow), order='F'),
+  )
+  return h
+
+
+def merge_convex_vert(mesh_convex: Tuple[ConvexMesh, ...]) -> Tuple[jax.Array, jax.Array]:
+  mesh_convex_size = len(mesh_convex)
+
+  total_convex_vertex_size = 0
+  for cm in mesh_convex : 
+    if cm is not None: total_convex_vertex_size += cm.vert.shape[0]
+  
+  g_convex_vertex_array = jp.zeros((total_convex_vertex_size, 3), jp.float32)
+  convex_vertex_offset_np = np.zeros(mesh_convex_size + 1, np.int32)
+  convex_vertex_offset_np[0] = 0
+
+  # copy convex_vertex_data to jax with offset 
+  vertex_offset = 0
+  for cmi in range(mesh_convex_size) :
+    vertex_count = 0
+    if mesh_convex[cmi] is not None: 
+      vertex_count = mesh_convex[cmi].vert.shape[0]
+      g_convex_vertex_array = jax.lax.dynamic_update_slice(g_convex_vertex_array, mesh_convex[cmi].vert, (vertex_offset, 0))
+    vertex_offset += vertex_count
+    convex_vertex_offset_np[cmi + 1] = vertex_offset
+  
+  # copy vertex_offset data to jax
+  g_convex_vertex_offset = jp.array(convex_vertex_offset_np)
+
+  return g_convex_vertex_array, g_convex_vertex_offset

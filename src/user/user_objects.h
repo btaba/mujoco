@@ -15,6 +15,9 @@
 #ifndef MUJOCO_SRC_USER_USER_OBJECTS_H_
 #define MUJOCO_SRC_USER_USER_OBJECTS_H_
 
+#include <cstddef>
+#include <array>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <string>
@@ -25,8 +28,9 @@
 #include <mujoco/mjtnum.h>
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjplugin.h>
-#include "user/user_api.h"
+#include <mujoco/mjspec.h>
 #include "user/user_cache.h"
+#include "user/user_util.h"
 
 // forward declarations of all mjC/X classes
 class mjCError;
@@ -39,9 +43,9 @@ class mjCSite;
 class mjCCamera;
 class mjCLight;
 class mjCHField;
-class mjCFlex;                        // defined in user_mesh
-class mjCMesh;                        // defined in user_mesh
-class mjCSkin;                        // defined in user_mesh
+class mjCFlex;         // defined in user_mesh.h
+class mjCMesh;         // defined in user_mesh.h
+class mjCSkin;         // defined in user_mesh.h
 class mjCTexture;
 class mjCMaterial;
 class mjCPair;
@@ -55,16 +59,15 @@ class mjCNumeric;
 class mjCText;
 class mjCTuple;
 class mjCDef;
-class mjCModel;                     // defined in user_model
-class mjXWriter;                    // defined in xml_native
-class mjXURDF;                      // defined in xml_urdf
+class mjCModel;        // defined in user_model.h
+class mjXWriter;       // defined in xml_native.h
+class mjXURDF;         // defined in xml_urdf.h
 
 
-//------------------------- helper classes and constants -------------------------------------------
+//------------------------- helper constants, classes and functions --------------------------------
 
 // number of positive size parameters for each geom type
 const int mjGEOMINFO[mjNGEOMTYPES] = {3, 0, 1, 2, 3, 2, 3, 0};
-
 
 // error information
 class [[nodiscard]] mjCError {
@@ -79,13 +82,11 @@ class [[nodiscard]] mjCError {
   bool warning;                   // is this a warning instead of error
 };
 
-
 // alternative specifications of frame orientation
 const char* ResolveOrientation(double* quat,             // set frame quat
                                bool degree,              // angle format: degree/radian
                                const char* sequence,     // euler sequence format: "xyz"
                                const mjsOrientation& orient);
-
 
 
 //------------------------- class mjCBoundingVolumeHierarchy ---------------------------------------
@@ -97,30 +98,28 @@ class mjCBoundingVolume {
 
   int contype;                  // contact type
   int conaffinity;              // contact affinity
-  const mjtNum* aabb;           // axis-aligned bounding box (center, size)
-  const mjtNum* pos;            // position (set by user or Compile1)
-  const mjtNum* quat;           // orientation (set by user or Compile1)
+  const double* aabb;           // axis-aligned bounding box (center, size)
+  const double* pos;            // position (set by user or Compile1)
+  const double* quat;           // orientation (set by user or Compile1)
 
   const int* GetId() const { if (id_) return id_; else return &idval_; }
   void SetId(const int* id) { id_ = id; }
   void SetId(int val) { idval_ = val; }
 
  private:
-  int idval_;                   // local id copy for nodes not storing their id's (e.g. faces)
-  const int* id_;               // pointer to object id
+  int idval_;      // local id copy for nodes not storing their id's (e.g. faces)
+  const int* id_;  // pointer to object id
 };
 
 
 // bounding volume hierarchy
 struct mjCBoundingVolumeHierarchy_ {
- public:
-  int nbvh;
-  std::vector<mjtNum> bvh;            // bounding boxes                                (nbvh x 6)
-  std::vector<int> child;             // children of each node                         (nbvh x 2)
-  std::vector<int*> nodeid;           // geom of elem id contained by the node         (nbvh x 1)
-  std::vector<int> level;             // levels of each node                           (nbvh x 1)
-
  protected:
+  int nbvh_ = 0;
+  std::vector<mjtNum> bvh_;           // bounding boxes                        (nbvh x 6)
+  std::vector<int> child_;            // children of each node                 (nbvh x 2)
+  std::vector<int*> nodeid_;          // id of elem contained by the node      (nbvh x 1)
+  std::vector<int> level_;            // levels of each node                   (nbvh x 1)
   std::vector<mjCBoundingVolume> bvleaf_;
   std::string name_;
   double ipos_[3];
@@ -132,25 +131,33 @@ class mjCBoundingVolumeHierarchy : public mjCBoundingVolumeHierarchy_ {
   mjCBoundingVolumeHierarchy();
 
   // make bounding volume hierarchy
-  void CreateBVH(void);
-  void Set(mjtNum ipos_element[3], mjtNum iquat_element[4]);
+  void CreateBVH();
+  void Set(double ipos_element[3], double iquat_element[4]);
   void AllocateBoundingVolumes(int nleaf);
   void RemoveInactiveVolumes(int nmax);
   mjCBoundingVolume* GetBoundingVolume(int id);
+
+  // public accessors
+  int Nbvh() const { return nbvh_; }
+  const std::vector<mjtNum>& Bvh() const { return bvh_; }
+  const std::vector<int>& Child() const { return child_; }
+  const std::vector<int*>& Nodeid() const { return nodeid_; }
+  const int* Nodeid(int id) const { return nodeid_[id]; }
+  const std::vector<int>& Level() const { return level_; }
 
  private:
   // internal class used during BVH construction, for partial sorting of bounding volumes
   struct BVElement {
     const mjCBoundingVolume* e;
     // position of the element in the BVH axes
-    mjtNum lpos[3];
+    double lpos[3];
   };
 
   struct BVElementCompare {
     int axis = 0;
 
     bool operator()(const BVElement& e1, const BVElement& e2) const {
-      if (e1.lpos[axis] != e2.lpos[axis]) {
+      if (std::abs(e1.lpos[axis] - e2.lpos[axis]) > mjEPS) {
         return e1.lpos[axis] < e2.lpos[axis];
       }
       // comparing pointers gives a stable sort, because they both come from the same array
@@ -167,7 +174,7 @@ class mjCBoundingVolumeHierarchy : public mjCBoundingVolumeHierarchy_ {
 //------------------------- class mjCBase ----------------------------------------------------------
 // Generic functionality for all derived classes
 
-class mjCBase_ : public mjElement {
+class mjCBase_ : public mjsElement {
  public:
   int id;                 // object id
   std::string name;       // object name
@@ -182,7 +189,8 @@ class mjCBase : public mjCBase_ {
 
  public:
   // load resource if found (fallback to OS filesystem)
-  static mjResource* LoadResource(std::string filename, const mjVFS* vfs);
+  static mjResource* LoadResource(const std::string& modelfiledir,
+                                  const std::string& filename, const mjVFS* vfs);
 
   // Get and sanitize content type from raw_text if not empty, otherwise parse
   // content type from resource_name; throw on failure
@@ -198,19 +206,23 @@ class mjCBase : public mjCBase_ {
   virtual void ResolveReferences(const mjCModel* m) {}
 
   // Appends prefix and suffix to reference
-  virtual void NameSpace(const mjCModel* m) {}
+  virtual void NameSpace(const mjCModel* m);
 
   // Copy assignment
   mjCBase& operator=(const mjCBase& other);
 
-  mjCDef* def;                    // defaults class used to init this object
   mjCFrame* frame;                // pointer to frame transformation
   mjCModel* model;                // pointer to model that created object
+
+  virtual ~mjCBase() = default;   // destructor
+
+  // reset keyframe references for allowing self-attach
+  virtual void ForgetKeyframes() {}
+  virtual void ForgetKeyframes() const {}
 
  protected:
   mjCBase();                                 // constructor
   mjCBase(const mjCBase& other);             // copy constructor
-  virtual ~mjCBase() = default;              // destructor
 };
 
 
@@ -229,8 +241,8 @@ class mjCBody_ : public mjCBase {
   int contype;                    // OR over geom contypes
   int conaffinity;                // OR over geom conaffinities
   double margin;                  // MAX over geom margins
-  mjtNum xpos0[3];                // global position in qpos0
-  mjtNum xquat0[4];               // global orientation in qpos0
+  double xpos0[3];                // global position in qpos0
+  double xquat0[4];               // global orientation in qpos0
 
   // used internally by compiler
   int lastdof;                    // id of last dof
@@ -243,6 +255,10 @@ class mjCBody_ : public mjCBase {
   std::string plugin_instance_name;
   std::vector<double> userdata_;
   std::vector<double> spec_userdata_;
+
+  // variables used for temporarily storing the state of the mocap bodies
+  std::map<std::string, std::array<mjtNum, 3>> mpos_;   // saved mocap_pos
+  std::map<std::string, std::array<mjtNum, 4>> mquat_;  // saved mocap_quat
 };
 
 class mjCBody : public mjCBody_, private mjsBody {
@@ -263,6 +279,9 @@ class mjCBody : public mjCBody_, private mjsBody {
   friend class mjXURDF;
 
  public:
+  mjCBody(mjCModel*);  // constructor
+  ~mjCBody();          // destructor
+
   // API for adding objects to body
   mjCBody*    AddBody(mjCDef* = 0);
   mjCFrame*   AddFrame(mjCFrame* = 0);
@@ -273,8 +292,10 @@ class mjCBody : public mjCBody_, private mjsBody {
   mjCCamera*  AddCamera(mjCDef* = 0);
   mjCLight*   AddLight(mjCDef* = 0);
 
-  // API for adding existing objects to body
-  mjCBody& operator+=(mjCBody& other);
+  // API for adding/removing objects to body
+  mjCBody& operator+=(const mjCBody& other);
+  mjCBody& operator+=(const mjCFrame& other);
+  mjCBody& operator-=(const mjCBody& subtree);
 
   // API for accessing objects
   int NumObjects(mjtObj type);
@@ -287,29 +308,35 @@ class mjCBody : public mjCBody_, private mjsBody {
   // set explicitinertial to true
   void MakeInertialExplicit();
 
-  // compute quat and diag inertia from fullinertia
-  // return nullptr on success, error string on failure
-  const char* FullInertia(double quat[4], double inertia[3]);
+  // compute the bounding volume hierarchy of the body.
+  void ComputeBVH();
 
   // variables set by user
   mjsBody spec;
 
   // inherited
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   // used by mjXWriter and mjCModel
   const std::vector<double>& get_userdata() { return userdata_; }
 
+  // get next child of given type
+  mjsElement* NextChild(mjsElement* child, mjtObj type = mjOBJ_UNKNOWN, bool recursive = false);
+
+  // reset keyframe references for allowing self-attach
+  void ForgetKeyframes() const;
+
+  // get mocap position and quaternion
+  mjtNum* mpos(const std::string& state_name);
+  mjtNum* mquat(const std::string& state_name);
+
  private:
-  mjCBody(mjCModel*);                               // constructor
   mjCBody(const mjCBody& other, mjCModel* _model);  // copy constructor
   mjCBody& operator=(const mjCBody& other);         // copy assignment
-  ~mjCBody();                                       // destructor
 
   void Compile(void);             // compiler
-  void GeomFrame(void);           // get inertial info from geoms
+  void InertiaFromGeom(void);     // get inertial info from geoms
 
   // objects allocated by Add functions
   std::vector<mjCBody*>    bodies;     // child bodies
@@ -322,6 +349,16 @@ class mjCBody : public mjCBody_, private mjsBody {
 
   void CopyFromSpec();                 // copy spec into attributes
   void PointToLocal(void);
+  void NameSpace_(const mjCModel* m, bool propagate = true);
+
+  // copy src list of elements into dst; set body, model and frame
+  template <typename T>
+  void CopyList(std::vector<T*>& dst, const std::vector<T*>& src,
+                std::map<mjCFrame*, int>& fmap, const mjCFrame* pframe = nullptr);
+
+  // gets next child of the same type in this body
+  template <class T>
+  mjsElement* GetNext(std::vector<T*>& list, const mjsElement* child, bool recursive = false);
 };
 
 
@@ -345,9 +382,12 @@ class mjCFrame : public mjCFrame_, private mjsFrame {
   friend class mjCModel;
 
  public:
+  mjCFrame(mjCModel* = 0, mjCFrame* = 0);
+  mjCFrame(const mjCFrame& other);
+  mjCFrame& operator=(const mjCFrame& other);
+
   mjsFrame spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   void CopyFromSpec(void);
@@ -355,12 +395,10 @@ class mjCFrame : public mjCFrame_, private mjsFrame {
   void SetParent(mjCBody* _body);
 
   mjCFrame& operator+=(const mjCBody& other);
-  mjCFrame& operator+=(const mjCFrame& other);
+
+  bool IsAncestor(const mjCFrame* child) const;  // true if child is contained in this frame
 
  private:
-  mjCFrame(mjCModel* = 0, mjCFrame* = 0);      // constructor
-  mjCFrame(const mjCFrame& other);             // copy constructor
-  mjCFrame& operator=(const mjCFrame& other);  // copy assignment
   void Compile(void);                          // compiler
 
   mjCBody* body;  // body that owns the frame
@@ -374,6 +412,12 @@ class mjCFrame : public mjCFrame_, private mjsFrame {
 class mjCJoint_ : public mjCBase {
  protected:
   mjCBody* body;                   // joint's body
+
+  // variable used for temporarily storing the state of the joint
+  int qposadr_;                                        // address of dof in data->qpos
+  int dofadr_;                                         // address of dof in data->qvel
+  std::map<std::string, std::array<mjtNum, 7>> qpos_;  // qpos at the previous step
+  std::map<std::string, std::array<mjtNum, 6>> qvel_;  // qvel at the previous step
 
   // variable-size data
   std::vector<double> userdata_;
@@ -390,26 +434,32 @@ class mjCJoint : public mjCJoint_, private mjsJoint {
   friend class mjXURDF;
 
  public:
+  mjCJoint(mjCModel* = nullptr, mjCDef* = nullptr);
+  mjCJoint(const mjCJoint& other);
+  mjCJoint& operator=(const mjCJoint& other);
+
   mjsJoint spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   void CopyFromSpec(void);
 
   // used by mjXWriter and mjCModel
-  const std::vector<double>& get_userdata() { return userdata_; }
-  const double* get_range() { return range; }
+  const std::vector<double>& get_userdata() const { return userdata_; }
+  const double* get_range() const { return range; }
 
   bool is_limited() const;
   bool is_actfrclimited() const;
 
+  static int nq(mjtJoint joint_type);
+  static int nv(mjtJoint joint_type);
+  int nq() const { return nq(spec.type); }
+  int nv() const { return nv(spec.type); }
+
+  mjtNum* qpos(const std::string& state_name);
+  mjtNum* qvel(const std::string& state_name);
 
  private:
-  mjCJoint(mjCModel* = 0, mjCDef* = 0);
-  mjCJoint(const mjCJoint& other);             // copy constructor
-  mjCJoint& operator=(const mjCJoint& other);  // copy assignment
-
   int Compile(void);               // compiler; return dofnum
   void PointToLocal(void);
 };
@@ -458,9 +508,13 @@ class mjCGeom : public mjCGeom_, private mjsGeom {
   friend class mjXURDF;
 
  public:
+  mjCGeom(mjCModel* = nullptr, mjCDef* = nullptr);
+  mjCGeom(const mjCGeom& other);
+  mjCGeom& operator=(const mjCGeom& other);
+
   using mjCBase::name;
   mjsGeom spec;                       // variables set by user
-  double GetVolume(void);             // compute geom volume
+  double GetVolume() const;           // compute geom volume
   void SetInertia(void);              // compute and set geom inertia
   bool IsVisual(void) const { return visual_; }
   void SetNotVisual(void) { visual_ = false; }
@@ -474,25 +528,21 @@ class mjCGeom : public mjCGeom_, private mjsGeom {
   void SetBoundingVolume(mjCBoundingVolume* bv) const;
 
   // used by mjXWriter and mjCModel
-  const std::vector<double>& get_userdata() { return userdata_; }
-  const std::string& get_hfieldname() { return spec_hfieldname_; }
-  const std::string& get_meshname() { return spec_meshname_; }
-  const std::string& get_material() { return spec_material_; }
+  const std::vector<double>& get_userdata() const { return userdata_; }
+  const std::string& get_hfieldname() const { return spec_hfieldname_; }
+  const std::string& get_meshname() const { return spec_meshname_; }
+  const std::string& get_material() const { return spec_material_; }
   void del_material() { spec_material_.clear(); }
 
  private:
-  mjCGeom(mjCModel* = 0, mjCDef* = 0);
-  mjCGeom(const mjCGeom& other);             // copy constructor
-  mjCGeom& operator=(const mjCGeom& other);  // copy assignment
-
   void Compile(void);                 // compiler
   double GetRBound(void);             // compute bounding sphere radius
   void ComputeAABB(void);             // compute axis-aligned bounding box
   void CopyFromSpec(void);
   void PointToLocal(void);
+  void NameSpace(const mjCModel* m);
 
   // inherited
-  using mjCBase::classname;
   using mjCBase::info;
 };
 
@@ -522,23 +572,22 @@ class mjCSite : public mjCSite_, private mjsSite {
   friend class mjXURDF;
 
  public:
+  mjCSite(mjCModel* = nullptr, mjCDef* = nullptr);
+  mjCSite(const mjCSite& other);
+  mjCSite& operator=(const mjCSite& other);
+
   mjsSite spec;                   // variables set by user
 
   // use strings from mjCBase rather than mjStrings from mjsSite
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   // used by mjXWriter and mjCModel
-  const std::vector<double>& get_userdata() { return userdata_; }
-  const std::string& get_material() { return material_; }
+  const std::vector<double>& get_userdata() const { return userdata_; }
+  const std::string& get_material() const { return material_; }
   void del_material() { material_.clear(); }
 
  private:
-  mjCSite(mjCModel* = 0, mjCDef* = 0);       // constructor
-  mjCSite(const mjCSite& other);             // copy constructor
-  mjCSite& operator=(const mjCSite& other);  // copy assignment
-
   void Compile(void);                     // compiler
   void CopyFromSpec();                    // copy spec into attributes
   void PointToLocal(void);
@@ -567,20 +616,19 @@ class mjCCamera : public mjCCamera_, private mjsCamera {
   friend class mjXWriter;
 
  public:
+  mjCCamera(mjCModel* = nullptr, mjCDef* = nullptr);
+  mjCCamera(const mjCCamera& other);
+  mjCCamera& operator=(const mjCCamera& other);
+
   mjsCamera spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   // used by mjXWriter and mjCModel
-  const std::string& get_targetbody() { return targetbody_; }
-  const std::vector<double>& get_userdata() { return userdata_; }
+  const std::string& get_targetbody() const { return targetbody_; }
+  const std::vector<double>& get_userdata() const { return userdata_; }
 
  private:
-  mjCCamera(mjCModel* = 0, mjCDef* = 0);         // constructor
-  mjCCamera(const mjCCamera& other);             // copy constructor
-  mjCCamera& operator=(const mjCCamera& other);  // copy assignment
-
   void Compile(void);                     // compiler
   void CopyFromSpec(void);
   void PointToLocal(void);
@@ -607,19 +655,18 @@ class mjCLight : public mjCLight_, private mjsLight {
   friend class mjXWriter;
 
  public:
+  mjCLight(mjCModel* = nullptr, mjCDef* = nullptr);
+  mjCLight(const mjCLight& other);
+  mjCLight& operator=(const mjCLight& other);
+
   mjsLight spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   // used by mjXWriter and mjCModel
-  const std::string& get_targetbody() { return targetbody_; }
+  const std::string& get_targetbody() const { return targetbody_; }
 
  private:
-  mjCLight(mjCModel* = 0, mjCDef* = 0);        // constructor
-  mjCLight(const mjCLight& other);             // copy constructor
-  mjCLight& operator=(const mjCLight& other);  // copy assignment
-
   void Compile(void);                     // compiler
   void CopyFromSpec(void);
   void PointToLocal(void);
@@ -644,20 +691,20 @@ class mjCFlex_ : public mjCBase {
   std::vector<int> shell;                 // shell fragment vertex ids (dim per fragment)
   std::vector<int> elemlayer;             // element layer (distance from border)
   std::vector<int> evpair;                // element-vertex pairs
-  std::vector<mjtNum> vertxpos;           // global vertex positions
+  std::vector<double> vertxpos;           // global vertex positions
   mjCBoundingVolumeHierarchy tree;        // bounding volume hierarchy
-  std::vector<mjtNum> elemaabb_;          // element bounding volume
+  std::vector<double> elemaabb_;          // element bounding volume
 
   // variable-size data
   std::vector<std::string> vertbody_;     // vertex body names
-  std::vector<mjtNum> vert_;              // vertex positions
+  std::vector<double> vert_;              // vertex positions
   std::vector<int> elem_;                 // element vertex ids
   std::vector<float> texcoord_;           // vertex texture coordinates
   std::string material_;                  // name of material used for rendering
 
   std::string spec_material_;
   std::vector<std::string> spec_vertbody_;
-  std::vector<mjtNum> spec_vert_;
+  std::vector<double> spec_vert_;
   std::vector<int> spec_elem_;
   std::vector<float> spec_texcoord_;
 };
@@ -670,9 +717,12 @@ class mjCFlex: public mjCFlex_, private mjsFlex {
   friend class mjXWriter;
 
  public:
+  mjCFlex(mjCModel* = nullptr);
+  mjCFlex(const mjCFlex& other);
+  mjCFlex& operator=(const mjCFlex& other);
+
   mjsFlex spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   void CopyFromSpec(void);
@@ -681,21 +731,17 @@ class mjCFlex: public mjCFlex_, private mjsFlex {
   void NameSpace(const mjCModel* m);
 
   // used by mjXWriter and mjCModel
-  const std::string& get_material() { return material_; }
-  const std::vector<std::string>& get_vertbody() { return vertbody_; }
-  const std::vector<double>& get_vert() { return vert_; }
-  const std::vector<double>& get_elemaabb() { return elemaabb_; }
-  const std::vector<int>& get_elem() { return elem_; }
-  const std::vector<float>& get_texcoord() { return texcoord_; }
+  const std::string& get_material() const { return material_; }
+  const std::vector<std::string>& get_vertbody() const { return vertbody_; }
+  const std::vector<double>& get_vert() const { return vert_; }
+  const std::vector<double>& get_elemaabb() const { return elemaabb_; }
+  const std::vector<int>& get_elem() const { return elem_; }
+  const std::vector<float>& get_texcoord() const { return texcoord_; }
 
   bool HasTexcoord() const;               // texcoord not null
   void DelTexcoord();                     // delete texcoord
 
  private:
-  mjCFlex(mjCModel* = 0);
-  mjCFlex(const mjCFlex& other);             // copy constructor
-  mjCFlex& operator=(const mjCFlex& other);  // copy assignment
-
   void Compile(const mjVFS* vfs);         // compiler
   void CreateBVH(void);                   // create flex BVH
   void CreateShellPair(void);             // create shells and evpairs
@@ -714,24 +760,25 @@ class mjCMesh_ : public mjCBase {
 
   std::string content_type_;                     // content type of file
   std::string file_;                             // mesh file
-  std::vector<float> uservert_;                  // user vertex data
-  std::vector<float> usernormal_;                // user normal data
-  std::vector<float> usertexcoord_;              // user texcoord data
-  std::vector<int> userface_;                    // user vertex indices
-  std::vector<int> userfacenormal_;              // user normal indices
+  std::vector<float> vert_;                      // vertex data
+  std::vector<float> normal_;                    // normal data
+  std::vector<float> texcoord_;                  // texcoord data
+  std::vector<int> face_;                        // vertex indices
+  std::vector<int> facenormal_;                  // normal indices
+  std::vector<int> facetexcoord_;                // texcoord indices
 
   std::string spec_content_type_;
   std::string spec_file_;
-  std::vector<float> spec_uservert_;
-  std::vector<float> spec_usernormal_;
-  std::vector<float> spec_usertexcoord_;
-  std::vector<int> spec_userface_;
-  std::vector<int> spec_userfacenormal_;
+  std::vector<float> spec_vert_;
+  std::vector<float> spec_normal_;
+  std::vector<float> spec_texcoord_;
+  std::vector<int> spec_face_;
+  std::vector<int> spec_facenormal_;
+  std::vector<int> spec_facetexcoord_;
 
   // used by the compiler
   bool visual_;                                  // true: the mesh is only visual
-  std::vector<int> userfacetexcoord_;            // user texcoord indices
-  std::vector< std::pair<int, int> > useredge_;  // user half-edge data
+  std::vector< std::pair<int, int> > halfedge_;  // half-edge data
 
   // mesh properties that indicate a well-formed mesh
   std::pair<int, int> invalidorientation_;    // indices of invalid edge; -1 if none
@@ -755,58 +802,55 @@ class mjCMesh_ : public mjCBase {
   double surface_;                    // surface of the mesh
 
   // size of mesh data to be copied into mjModel
-  int nvert_;                         // number of vertices
-  int nnormal_;                       // number of normals
-  int ntexcoord_;                     // number of texcoords
-  int nface_;                         // number of faces
   int szgraph_;                       // size of graph data in ints
   bool needhull_;                     // needs convex hull for collisions
+  int maxhullvert_;                   // max vertex count of convex hull
 
   mjCBoundingVolumeHierarchy tree_;   // bounding volume hierarchy
   std::vector<double> face_aabb_;     // bounding boxes of all faces
 };
 
 class mjCMesh: public mjCMesh_, private mjsMesh {
-  friend class mjCModel;
-  friend class mjCFlexcomp;
-  friend class mjXWriter;
  public:
-  mjCMesh(mjCModel* = 0, mjCDef* = 0);
-  mjCMesh(const mjCMesh& other);             // copy constructor
-  mjCMesh& operator=(const mjCMesh& other);  // copy assignment
+  mjCMesh(mjCModel* = nullptr, mjCDef* = nullptr);
+  mjCMesh(const mjCMesh& other);
+  mjCMesh& operator=(const mjCMesh& other);
   ~mjCMesh();
 
   mjsMesh spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   void CopyFromSpec(void);
   void PointToLocal(void);
 
-  // public getters and setters
-  const std::string& get_content_type() const { return content_type_; }
-  const std::string& get_file() const { return file_; }
-  const double* get_refpos() const { return refpos; }
-  const double* get_refquat() const { return refquat; }
-  const double* get_scale() const { return scale; }
-  bool get_smoothnormal() const { return smoothnormal; }
-  void set_needhull(bool needhull);
+  // accessors
+  const mjsPlugin& Plugin() const { return plugin; }
+  const std::string& ContentType() const { return content_type_; }
+  const std::string& File() const { return file_; }
+  const double* Refpos() const { return refpos; }
+  const double* Refquat() const { return refquat; }
+  const double* Scale() const { return scale; }
+  bool SmoothNormal() const { return smoothnormal; }
+  const std::vector<float>& Vert() const { return vert_; }
+  float Vert(int i) const { return vert_[i]; }
+  const std::vector<float>& UserVert() const { return spec_vert_; }
+  const std::vector<float>& UserNormal() const { return spec_normal_; }
+  const std::vector<float>& UserTexcoord() const { return spec_texcoord_; }
+  const std::vector<int>& Face() const { return face_; }
+  const std::vector<int>& UserFace() const { return spec_face_; }
 
-  // public getters for user data
-  const std::vector<float>& get_uservert() const { return uservert_; }
-  const std::vector<float>& get_usernormal() const { return usernormal_; }
-  const std::vector<float>& get_usertexcoord() const { return usertexcoord_; }
-  const std::vector<int>& get_userface() const { return userface_; }
+  // setters
+  void SetNeedHull(bool needhull) { needhull_ = needhull; }
 
   // mesh properties computed by Compile
   const double* aamm() const { return aamm_; }
 
   // number of vertices, normals, texture coordinates, and faces
-  int nvert() const { return nvert_; }
-  int nnormal() const { return nnormal_; }
-  int ntexcoord() const { return ntexcoord_; }
-  int nface() const { return nface_; }
+  int nvert() const { return vert_.size()/3; }
+  int nnormal() const { return normal_.size()/3; }
+  int ntexcoord() const { return texcoord_.size()/2; }
+  int nface() const { return face_.size()/3; }
 
   // return size of graph data in ints
   int szgraph() const { return szgraph_; }
@@ -838,31 +882,38 @@ class mjCMesh: public mjCMesh_, private mjsMesh {
   // sets properties of a bounding volume given a face id
   void SetBoundingVolume(int faceid);
 
+  void LoadOBJ(mjResource* resource);  // load mesh in wavefront OBJ format
+  void LoadSTL(mjResource* resource);  // load mesh in STL BIN format
+  void LoadMSH(mjResource* resource);  // load mesh in MSH BIN format
+
+  void RemoveRepeated();               // remove repeated vertices
+
  private:
-  void LoadOBJ(mjResource* resource);         // load mesh in wavefront OBJ format
-  bool LoadCachedOBJ(const mjCAsset& asset);  // load OBJ from cache asset, return true on success
-  void LoadSTL(mjResource* resource);         // load mesh in STL BIN format
-  void LoadMSH(mjResource* resource);         // load mesh in MSH BIN format
+  // load mesh from cache asset, return true on success (OBJ files are only supported)
+  bool LoadCachedMesh(mjCCache *cache, const mjResource* resource);
+  // store mesh into asset cache (OBJ files are only supported)
+  void CacheMesh(mjCCache *cache, const mjResource* resource,
+                 std::string_view asset_type);
+
   void LoadSDF();                             // generate mesh using marching cubes
-  void MakeGraph(void);                       // make graph of convex hull
-  void CopyGraph(void);                       // copy graph into face data
-  void MakeNormal(void);                      // compute vertex normals
-  void MakeCenter(void);                      // compute face circumcircle data
+  void MakeGraph();                           // make graph of convex hull
+  void CopyGraph();                           // copy graph into face data
+  void MakeNormal();                          // compute vertex normals
+  void MakeCenter();                          // compute face circumcircle data
   void Process();                             // compute inertial properties
   void ApplyTransformations();                // apply user transformations
   void ComputeFaceCentroid(double[3]);        // compute centroid of all faces
-  void RemoveRepeated(void);                  // remove repeated vertices
   void CheckMesh(mjtGeomInertia type);        // check if the mesh is valid
 
   // mesh data to be copied into mjModel
-  float* vert_;                       // vertex data (3*nvert), relative to (pos, quat)
-  float* normal_;                     // vertex normal data (3*nnormal)
   double* center_;                    // face circumcenter data (3*nface)
-  float* texcoord_;                   // vertex texcoord data (2*ntexcoord or NULL)
-  int* face_;                         // face vertex indices (3*nface)
-  int* facenormal_;                   // face normal indices (3*nface)
-  int* facetexcoord_;                 // face texcoord indices (3*nface)
   int* graph_;                        // convex graph data
+
+  // for caching purposes
+  std::vector<int> vertex_index_;
+  std::vector<int> normal_index_;
+  std::vector<int> texcoord_index_;
+  std::vector<unsigned char> num_face_vertices_;
 
   // compute the volume and center-of-mass of the mesh given the face center
   void ComputeVolume(double CoM[3], mjtGeomInertia type, const double facecen[3],
@@ -908,32 +959,31 @@ class mjCSkin: public mjCSkin_, private mjsSkin {
   friend class mjXWriter;
 
  public:
+  mjCSkin(mjCModel* = nullptr);
+  mjCSkin(const mjCSkin& other);
+  mjCSkin& operator=(const mjCSkin& other);
+  ~mjCSkin();
+
   mjsSkin spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
-  std::string get_file() const { return file_; }
-  std::string& get_material() { return material_; }
-  std::vector<float>& get_vert() { return vert_; }
-  std::vector<float>& get_texcoord() { return texcoord_; }
-  std::vector<int>& get_face() { return face_; }
-  std::vector<std::string>& get_bodyname() { return bodyname_; }
-  std::vector<float>& get_bindpos() { return bindpos_; }
-  std::vector<float>& get_bindquat() { return bindquat_; }
-  std::vector<std::vector<int>>& get_vertid() { return vertid_; }
-  std::vector<std::vector<float>>& get_vertweight() { return vertweight_; }
+  const std::string& File() const { return file_; }
+  const std::string& get_material() const { return material_; }
+  const std::vector<float>& get_vert() const { return vert_; }
+  const std::vector<float>& get_texcoord() const { return texcoord_; }
+  const std::vector<int>& get_face() const { return face_; }
+  const std::vector<std::string>& get_bodyname() const { return bodyname_; }
+  const std::vector<float>& get_bindpos() const { return bindpos_; }
+  const std::vector<float>& get_bindquat() const { return bindquat_; }
+  const std::vector<std::vector<int>>& get_vertid() const { return vertid_; }
+  const std::vector<std::vector<float>>& get_vertweight() const { return vertweight_; }
   void del_material() { material_.clear(); }
 
   void CopyFromSpec();
   void PointToLocal();
 
  private:
-  mjCSkin(mjCModel* = 0);                     // constructor
-  mjCSkin(const mjCSkin& other);             // copy constructor
-  mjCSkin& operator=(const mjCSkin& other);  // copy assignment
-  ~mjCSkin();                                 // destructor
-
   void ResolveReferences(const mjCModel* m);
   void NameSpace(const mjCModel* m);
   void Compile(const mjVFS* vfs);             // compiler
@@ -963,6 +1013,11 @@ class mjCHField : public mjCHField_, private mjsHField {
   friend class mjXWriter;
 
  public:
+  mjCHField(mjCModel* model);
+  mjCHField(const mjCHField& other);
+  mjCHField& operator=(const mjCHField& other);
+  ~mjCHField();
+
   mjsHField spec;
   using mjCBase::name;
   using mjCBase::info;
@@ -970,17 +1025,12 @@ class mjCHField : public mjCHField_, private mjsHField {
   void CopyFromSpec(void);
   void PointToLocal(void);
 
-  std::string get_file() const { return file_; }
+  std::string File() const { return file_; }
 
   // getter for user data
   std::vector<float>& get_userdata() { return userdata_; }
 
  private:
-  mjCHField(mjCModel* model);                    // constructor
-  mjCHField(const mjCHField& other);             // copy constructor
-  mjCHField& operator=(const mjCHField& other);  // copy assignment
-  ~mjCHField();                                  // destructor
-
   void Compile(const mjVFS* vfs);         // compiler
 
   void LoadCustom(mjResource* resource);  // load from custom format
@@ -994,7 +1044,7 @@ class mjCHField : public mjCHField_, private mjsHField {
 
 class mjCTexture_ : public mjCBase {
  protected:
-  std::vector<mjtByte> rgb;                   // rgb data
+  std::vector<std::byte> data_;  // texture data (rgb, roughness, etc.)
 
   std::string file_;
   std::string content_type_;
@@ -1010,25 +1060,23 @@ class mjCTexture : public mjCTexture_, private mjsTexture {
   friend class mjXWriter;
 
  public:
-  ~mjCTexture();                  // destructor
+  mjCTexture(mjCModel*);
+  mjCTexture(const mjCTexture& other);
+  mjCTexture& operator=(const mjCTexture& other);
+  ~mjCTexture();
 
   mjsTexture spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   void CopyFromSpec(void);
   void PointToLocal(void);
 
-  std::string get_file() const { return file_; }
+  std::string File() const { return file_; }
   std::string get_content_type() const { return content_type_; }
   std::vector<std::string> get_cubefiles() const { return cubefiles_; }
 
  private:
-  mjCTexture(mjCModel*);                           // constructor
-  mjCTexture(const mjCTexture& other);             // copy constructor
-  mjCTexture& operator=(const mjCTexture& other);  // copy assignment
-
   void Compile(const mjVFS* vfs);         // compiler
 
   void Builtin2D(void);                   // make builtin 2D
@@ -1047,6 +1095,8 @@ class mjCTexture : public mjCTexture_, private mjsTexture {
   void LoadCustom(mjResource* resource,
                   std::vector<unsigned char>& image,
                   unsigned int& w, unsigned int& h);
+
+  bool clear_data_;  // if true, data_ is empty and should be filled by Compile
 };
 
 
@@ -1056,9 +1106,9 @@ class mjCTexture : public mjCTexture_, private mjsTexture {
 
 class mjCMaterial_ : public mjCBase {
  protected:
-  int texid;                      // id of material
-  std::string texture_;
-  std::string spec_texture_;
+  int texid[mjNTEXROLE];                    // id of material's textures
+  std::vector<std::string> textures_;
+  std::vector<std::string> spec_textures_;
 };
 
 class mjCMaterial : public mjCMaterial_, private mjsMaterial {
@@ -1067,22 +1117,22 @@ class mjCMaterial : public mjCMaterial_, private mjsMaterial {
   friend class mjXWriter;
 
  public:
+  mjCMaterial(mjCModel* = nullptr, mjCDef* = nullptr);
+  mjCMaterial(const mjCMaterial& other);
+  mjCMaterial& operator=(const mjCMaterial& other);
+
   mjsMaterial spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   void CopyFromSpec();
   void PointToLocal();
+  void NameSpace(const mjCModel* m);
 
-  std::string get_texture() { return texture_; }
-  void del_texture() { texture_.clear(); }
+  const std::string& get_texture(int i) const { return textures_[i]; }
+  void del_textures() { for (auto& t : textures_) t.clear(); }
 
  private:
-  mjCMaterial(mjCModel* = 0, mjCDef* = 0);           // constructor
-  mjCMaterial(const mjCMaterial& other);             // copy constructor
-  mjCMaterial& operator=(const mjCMaterial& other);  // copy assignment
-
   void Compile(void);                       // compiler
 };
 
@@ -1107,9 +1157,12 @@ class mjCPair : public mjCPair_, private mjsPair {
   friend class mjXWriter;
 
  public:
+  mjCPair(mjCModel* = nullptr, mjCDef* = nullptr);
+  mjCPair(const mjCPair& other);
+  mjCPair& operator=(const mjCPair& other);
+
   mjsPair spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   void CopyFromSpec();
@@ -1117,18 +1170,14 @@ class mjCPair : public mjCPair_, private mjsPair {
   void ResolveReferences(const mjCModel* m);
   void NameSpace(const mjCModel* m);
 
-  std::string get_geomname1() { return geomname1_; }
-  std::string get_geomname2() { return geomname2_; }
+  const std::string& get_geomname1() const { return geomname1_; }
+  const std::string& get_geomname2() const { return geomname2_; }
 
   int GetSignature(void) {
     return signature;
   }
 
  private:
-  mjCPair(mjCModel* = 0, mjCDef* = 0);       // constructor
-  mjCPair(const mjCPair& other);             // copy constructor
-  mjCPair& operator=(const mjCPair& other);  // copy assignment
-
   void Compile(void);                   // compiler
 
   mjCGeom* geom1;                 // geom1
@@ -1157,6 +1206,10 @@ class mjCBodyPair : public mjCBodyPair_, private mjsExclude {
   friend class mjCModel;
 
  public:
+  mjCBodyPair(mjCModel*);
+  mjCBodyPair(const mjCBodyPair& other);
+  mjCBodyPair& operator=(const mjCBodyPair& other);
+
   mjsExclude spec;
   using mjCBase::name;
   using mjCBase::info;
@@ -1169,16 +1222,12 @@ class mjCBodyPair : public mjCBodyPair_, private mjsExclude {
   std::string get_bodyname1() const { return bodyname1_; }
   std::string get_bodyname2() const { return bodyname2_; }
 
-  int GetSignature(void) {
+  int GetSignature() {
     return signature;
   }
 
  private:
-  mjCBodyPair(mjCModel*);                            // constructor
-  mjCBodyPair(const mjCBodyPair& other);             // copy constructor
-  mjCBodyPair& operator=(const mjCBodyPair& other);  // copy assignment
-
-  void Compile(void);              // compiler
+  void Compile();              // compiler
 };
 
 
@@ -1203,9 +1252,12 @@ class mjCEquality : public mjCEquality_, private mjsEquality {
   friend class mjXWriter;
 
  public:
+  mjCEquality(mjCModel* = 0, mjCDef* = 0);
+  mjCEquality(const mjCEquality& other);
+  mjCEquality& operator=(const mjCEquality& other);
+
   mjsEquality spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   void CopyFromSpec();
@@ -1214,10 +1266,6 @@ class mjCEquality : public mjCEquality_, private mjsEquality {
   void NameSpace(const mjCModel* m);
 
  private:
-  mjCEquality(mjCModel* = 0, mjCDef* = 0);           // constructor
-  mjCEquality(const mjCEquality& other);             // copy constructor
-  mjCEquality& operator=(const mjCEquality& other);  // copy assignment
-
   void Compile(void);                       // compiler
 };
 
@@ -1243,13 +1291,17 @@ class mjCTendon : public mjCTendon_, private mjsTendon {
   friend class mjXWriter;
 
  public:
+  mjCTendon(mjCModel* = nullptr, mjCDef* = nullptr);
+  mjCTendon(const mjCTendon& other);
+  mjCTendon& operator=(const mjCTendon& other);
+  ~mjCTendon();
+
   mjsTendon spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   void set_material(std::string _material) { material_ = _material; }
-  std::string& get_material() { return material_; }
+  const std::string& get_material() const { return material_; }
   void del_material() { material_.clear(); }
 
   // API for adding wrapping objects
@@ -1259,12 +1311,12 @@ class mjCTendon : public mjCTendon_, private mjsTendon {
   void WrapPulley(double divisor, std::string_view info = "");                    // pulley
 
   // API for access to wrapping objects
-  int NumWraps(void);                         // number of wraps
-  mjCWrap* GetWrap(int);                      // pointer to wrap
+  int NumWraps() const;                       // number of wraps
+  const mjCWrap* GetWrap(int i) const;        // pointer to wrap
   std::vector<mjCWrap*> path;                 // wrapping objects
 
   // used by mjXWriter and mjCModel
-  const std::vector<double>& get_userdata() { return userdata_; }
+  const std::vector<double>& get_userdata() const { return userdata_; }
   const double* get_range() { return range; }
 
   void CopyFromSpec();
@@ -1276,11 +1328,6 @@ class mjCTendon : public mjCTendon_, private mjsTendon {
   bool is_limited() const;
 
  private:
-  mjCTendon(mjCModel* = 0, mjCDef* = 0);         // constructor
-  mjCTendon(const mjCTendon& other);             // copy constructor
-  mjCTendon& operator=(const mjCTendon& other);  // copy assignment
-  ~mjCTendon();                                  // destructor
-
   void Compile(void);                         // compiler
 };
 
@@ -1339,14 +1386,13 @@ class mjCPlugin : public mjCPlugin_ {
   friend class mjXWriter;
 
  public:
+  mjCPlugin(mjCModel*);
+  mjCPlugin(const mjCPlugin& other);
+  mjCPlugin& operator=(const mjCPlugin& other);
   mjsPlugin spec;
   mjCBase* parent;   // parent object (only used when generating error message)
-  mjCPlugin(const mjCPlugin& other);             // copy constructor
 
  private:
-  mjCPlugin(mjCModel*);                          // constructor
-  mjCPlugin& operator=(const mjCPlugin& other);  // copy assignment
-
   void Compile(void);              // compiler
 };
 
@@ -1358,6 +1404,12 @@ class mjCPlugin : public mjCPlugin_ {
 class mjCActuator_ : public mjCBase {
  protected:
   int trnid[2];                   // id of transmission target
+
+  // variable used for temporarily storing the state of the actuator
+  int actadr_;                                      // address of dof in data->act
+  int actdim_;                                      // number of dofs in data->act
+  std::map<std::string, std::vector<mjtNum>> act_;  // act at the previous step
+  std::map<std::string, mjtNum> ctrl_;              // ctrl at the previous step
 
   // variable-size data
   std::string plugin_name;
@@ -1378,31 +1430,36 @@ class mjCActuator : public mjCActuator_, private mjsActuator {
   friend class mjXWriter;
 
  public:
+  mjCActuator(mjCModel* = nullptr, mjCDef* = nullptr);
+  mjCActuator(const mjCActuator& other);
+  mjCActuator& operator=(const mjCActuator& other);
+
   mjsActuator spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   // used by mjXWriter and mjCModel
-  const std::vector<double>& get_userdata() { return userdata_; }
-  const std::string& get_target() { return spec_target_; }
-  const std::string& get_slidersite() { return spec_slidersite_; }
-  const std::string& get_refsite() { return spec_refsite_; }
+  const std::vector<double>& get_userdata() const { return userdata_; }
+  const std::string& get_target() const { return spec_target_; }
+  const std::string& get_slidersite() const { return spec_slidersite_; }
+  const std::string& get_refsite() const { return spec_refsite_; }
 
   bool is_ctrllimited() const;
   bool is_forcelimited() const;
   bool is_actlimited() const;
 
- private:
-  mjCActuator(mjCModel* = 0, mjCDef* = 0);           // constructor
-  mjCActuator(const mjCActuator& other);             // copy constructor
-  mjCActuator& operator=(const mjCActuator& other);  // copy assignment
+  std::vector<mjtNum>& act(const std::string& state_name);
+  mjtNum& ctrl(const std::string& state_name);
 
+ private:
   void Compile(void);                       // compiler
   void CopyFromSpec();
   void PointToLocal();
   void ResolveReferences(const mjCModel* m);
   void NameSpace(const mjCModel* m);
+
+  // reset keyframe references for allowing self-attach
+  void ForgetKeyframes();
 
   mjCBase* ptarget;  // transmission target
 };
@@ -1433,9 +1490,12 @@ class mjCSensor : public mjCSensor_, private mjsSensor {
   friend class mjXWriter;
 
  public:
+  mjCSensor(mjCModel*);
+  mjCSensor(const mjCSensor& other);
+  mjCSensor& operator=(const mjCSensor& other);
+
   mjsSensor spec;
   using mjCBase::name;
-  using mjCBase::classname;
   using mjCBase::info;
 
   // used by mjXWriter and mjCModel
@@ -1444,10 +1504,6 @@ class mjCSensor : public mjCSensor_, private mjsSensor {
   const std::string& get_refname() { return spec_refname_; }
 
  private:
-  mjCSensor(mjCModel*);                          // constructor
-  mjCSensor(const mjCSensor& other);             // copy constructor
-  mjCSensor& operator=(const mjCSensor& other);  // copy assignment
-
   void Compile(void);             // compiler
   void CopyFromSpec();
   void PointToLocal();
@@ -1474,6 +1530,11 @@ class mjCNumeric : public mjCNumeric_, private mjsNumeric {
   friend class mjXWriter;
 
  public:
+  mjCNumeric(mjCModel*);
+  mjCNumeric(const mjCNumeric& other);
+  mjCNumeric& operator=(const mjCNumeric& other);
+  ~mjCNumeric();
+
   mjsNumeric spec;
   using mjCBase::name;
   using mjCBase::info;
@@ -1482,11 +1543,6 @@ class mjCNumeric : public mjCNumeric_, private mjsNumeric {
   void CopyFromSpec();
 
  private:
-  mjCNumeric(mjCModel*);                           // constructor
-  mjCNumeric(const mjCNumeric& other);             // copy constructor
-  mjCNumeric& operator=(const mjCNumeric& other);  // copy assignment
-  ~mjCNumeric();                                   // destructor
-
   void Compile(void);                 // compiler
 };
 
@@ -1506,6 +1562,11 @@ class mjCText : public mjCText_, private mjsText {
   friend class mjXWriter;
 
  public:
+  mjCText(mjCModel*);
+  mjCText(const mjCText& other);
+  mjCText& operator=(const mjCText& other);
+  ~mjCText();
+
   mjsText spec;
   using mjCBase::name;
   using mjCBase::info;
@@ -1514,11 +1575,6 @@ class mjCText : public mjCText_, private mjsText {
   void CopyFromSpec();
 
  private:
-  mjCText(mjCModel*);                        // constructor
-  mjCText(const mjCText& other);             // copy constructor
-  mjCText& operator=(const mjCText& other);  // copy assignment
-  ~mjCText();                                // destructor
-
   void Compile(void);                 // compiler
 };
 
@@ -1543,6 +1599,11 @@ class mjCTuple : public mjCTuple_, private mjsTuple {
   friend class mjXWriter;
 
  public:
+  mjCTuple(mjCModel*);
+  mjCTuple(const mjCTuple& other);
+  mjCTuple& operator=(const mjCTuple& other);
+  ~mjCTuple();
+
   mjsTuple spec;
   using mjCBase::name;
   using mjCBase::info;
@@ -1553,11 +1614,6 @@ class mjCTuple : public mjCTuple_, private mjsTuple {
   void NameSpace(const mjCModel* m);
 
  private:
-  mjCTuple(mjCModel*);                         // constructor
-  mjCTuple(const mjCTuple& other);             // copy constructor
-  mjCTuple& operator=(const mjCTuple& other);  // copy assignment
-  ~mjCTuple();                                 // destructor
-
   void Compile(void);             // compiler
 };
 
@@ -1587,6 +1643,11 @@ class mjCKey : public mjCKey_, private mjsKey {
   friend class mjXWriter;
 
  public:
+  mjCKey(mjCModel*);
+  mjCKey(const mjCKey& other);
+  mjCKey& operator=(const mjCKey& other);
+  ~mjCKey();
+
   mjsKey spec;
   using mjCBase::name;
   using mjCBase::info;
@@ -1595,11 +1656,6 @@ class mjCKey : public mjCKey_, private mjsKey {
   void CopyFromSpec();
 
  private:
-  mjCKey(mjCModel*);                       // constructor
-  mjCKey(const mjCKey& other);             // copy constructor
-  mjCKey& operator=(const mjCKey& other);  // copy assignment
-  ~mjCKey();                               // destructor
-
   void Compile(const mjModel* m);  // compiler
 };
 
@@ -1608,37 +1664,57 @@ class mjCKey : public mjCKey_, private mjsKey {
 //------------------------- class mjCDef -----------------------------------------------------------
 // Describes one set of defaults
 
-class mjCDef : public mjElement {
+class mjCDef : public mjsElement {
   friend class mjXWriter;
 
  public:
-  mjCDef(void);                            // constructor
-  mjCDef(const mjCDef& other);             // copy constructor
-  void Compile(const mjCModel* model);     // compiler
-  mjCDef& operator=(const mjCDef& other);  // copy assignment
+  mjCDef();
+  mjCDef(const mjCDef& other);
+  mjCDef& operator=(const mjCDef& other);
+  mjCDef& operator+=(const mjCDef& other);
+
+  void CopyWithoutChildren(const mjCDef& other);
   void PointToLocal(void);
   void CopyFromSpec(void);
+  void NameSpace(const mjCModel* m);
+
+  void Compile(const mjCModel* model);
+
+  // accessors
+  mjCJoint& Joint() { return joint_; }
+  mjCGeom& Geom() { return geom_; }
+  mjCSite& Site() { return site_; }
+  mjCCamera& Camera() { return camera_; }
+  mjCLight& Light() { return light_; }
+  mjCFlex& Flex() { return flex_; }
+  mjCMesh& Mesh() { return mesh_; }
+  mjCMaterial& Material() { return material_; }
+  mjCPair& Pair() { return pair_; }
+  mjCEquality& Equality() { return equality_; }
+  mjCTendon& Tendon() { return tendon_; }
+  mjCActuator& Actuator() { return actuator_; }
 
   // identifiers
   std::string name;               // class name
-  int parentid;                   // id of parent class
-  std::vector<int> childid;       // ids of child classes
+  int id;                         // id of this default
+  mjCDef* parent;                 // id of parent class
+  std::vector<mjCDef*> child;     // child classes
 
   mjsDefault spec;
 
-  // default objects (TODO: they should become private)
-  mjCJoint    joint;
-  mjCGeom     geom;
-  mjCSite     site;
-  mjCCamera   camera;
-  mjCLight    light;
-  mjCFlex     flex;
-  mjCMesh     mesh;
-  mjCMaterial material;
-  mjCPair     pair;
-  mjCEquality equality;
-  mjCTendon   tendon;
-  mjCActuator actuator;
+ private:
+  mjCJoint joint_;
+  mjCGeom geom_;
+  mjCSite site_;
+  mjCCamera camera_;
+  mjCLight light_;
+  mjCFlex flex_;
+  mjCMesh mesh_;
+  mjCMaterial material_;
+  mjCPair pair_;
+  mjCEquality equality_;
+  mjCTendon tendon_;
+  mjCActuator actuator_;
 };
 
 #endif  // MUJOCO_SRC_USER_USER_OBJECTS_H_

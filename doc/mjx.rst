@@ -66,25 +66,32 @@ directly from the top-level ``mjx`` module.
 Structs
 -------
 
-Before running MJX functions on an accelerator device, structs must be copied onto the device via the ``mjx.device_put``
-function.  Placing an :ref:`mjModel` on device yields an ``mjx.Model``.  Placing an :ref:`mjData` on device yields
+Before running MJX functions on an accelerator device, structs must be copied onto the device via the ``mjx.put_model`` and ``mjx.put_data``
+functions.  Placing an :ref:`mjModel` on device yields an ``mjx.Model``.  Placing an :ref:`mjData` on device yields
 an ``mjx.Data``:
 
 .. code-block:: python
 
    model = mujoco.MjModel.from_xml_string("...")
    data = mujoco.MjData(model)
-   mjx_model = mjx.device_put(model)
-   mjx_data = mjx.device_put(data)
+   mjx_model = mjx.put_model(model)
+   mjx_data = mjx.put_data(model, data)
 
-These MJX variants mirror their MuJoCo counterparts but have three key differences:
+These MJX variants mirror their MuJoCo counterparts but have a few key differences:
 
-#. Fields in ``mjx.Model`` and ``mjx.Data`` are JAX arrays copied onto device, instead of numpy arrays.
+#. ``mjx.Model`` and ``mjx.Data`` contain JAX arrays that are copied onto device.
 #. Some fields are missing from ``mjx.Model`` and ``mjx.Data`` for features that are
    :ref:`unsupported <mjxFeatureParity>` in MJX.
-#. Arrays in ``mjx.Model`` and ``mjx.Data`` support adding batch dimensions. Batch dimensions are a natural way to
+#. JAX arrays in ``mjx.Model`` and ``mjx.Data`` support adding batch dimensions. Batch dimensions are a natural way to
    express domain randomization (in the case of ``mjx.Model``) or high-throughput simulation for reinforcement learning
    (in the case of ``mjx.Data``).
+#. Numpy arrays in ``mjx.Model`` and ``mjx.Data`` are structural fields that control the output of JIT compilation.
+   Modifying these arrays will force JAX to recompile MJX functions. As an example,
+   ``jnt_limited`` is a numpy array passed by reference from :ref:`mjModel`, which determines if joint limit
+   constraints should be applied.  If ``jnt_limited`` is modified, JAX will
+   re-compile MJX functions.
+   On the other hand, ``jnt_range`` is a JAX array that can be modified at runtime, and will only apply to joints with limits
+   as specified by the ``jnt_limited`` field.
 
 
 Neither ``mjx.Model`` nor ``mjx.Data`` are meant to be constructed manually.  An ``mjx.Data`` may be created by calling
@@ -93,7 +100,7 @@ Neither ``mjx.Model`` nor ``mjx.Data`` are meant to be constructed manually.  An
 .. code-block:: python
 
    model = mujoco.MjModel.from_xml_string("...")
-   mjx_model = mjx.device_put(model)
+   mjx_model = mjx.put_model(model)
    mjx_data = mjx.make_data(model)
 
 Using ``mjx.make_data`` may be preferable when constructing batched ``mjx.Data`` structures inside of a ``vmap``.
@@ -144,7 +151,7 @@ Minimal example
    """
 
    model = mujoco.MjModel.from_xml_string(XML)
-   mjx_model = mjx.device_put(model)
+   mjx_model = mjx.put_model(model)
 
    @jax.vmap
    def batched_step(vel):
@@ -181,7 +188,7 @@ The following features are **fully supported** in MJX:
    * - :ref:`Joint <mjtJoint>`
      - ``FREE``, ``BALL``, ``SLIDE``, ``HINGE``
    * - :ref:`Transmission <mjtTrn>`
-     - ``TRN_JOINT``, ``TRN_SITE``
+     - ``TRN_JOINT``, ``TRN_SITE``, ``TRN_TENDON``
    * - :ref:`Actuator Dynamics <mjtDyn>`
      - ``NONE``, ``INTEGRATOR``, ``FILTER``, ``FILTEREXACT``
    * - :ref:`Actuator Gain <mjtGain>`
@@ -189,21 +196,24 @@ The following features are **fully supported** in MJX:
    * - :ref:`Actuator Bias <mjtBias>`
      - ``NONE``, ``AFFINE``
    * - :ref:`Geom <mjtGeom>`
-     - ``PLANE``, ``SPHERE``, ``CAPSULE``, ``BOX``, ``MESH``
+     - ``PLANE``, ``HFIELD``, ``SPHERE``, ``CAPSULE``, ``BOX``, ``MESH`` are fully implemented. ``ELLIPSOID`` and
+       ``CYLINDER`` are implemented but only collide with other primitives, note that ``BOX`` is implemented as a mesh.
    * - :ref:`Constraint <mjtConstraint>`
-     - ``EQUALITY``, ``LIMIT_JOINT``, ``CONTACT_PYRAMIDAL``
+     - ``EQUALITY``, ``LIMIT_JOINT``, ``CONTACT_FRICTIONLESS``, ``CONTACT_PYRAMIDAL``, ``CONTACT_ELLIPTIC``, ``FRICTION_DOF``, ``FRICTION_TENDON``
    * - :ref:`Equality <mjtEq>`
-     - ``CONNECT``, ``WELD``, ``JOINT``
+     - ``CONNECT``, ``WELD``, ``JOINT``, ``TENDON``
    * - :ref:`Integrator <mjtIntegrator>`
-     - ``EULER``, ``RK4``
+     - ``EULER``, ``RK4``, ``IMPLICITFAST`` (``IMPLICITFAST`` not supported with :doc:`fluid drag <computation/fluid>`)
    * - :ref:`Cone <mjtCone>`
-     - ``PYRAMIDAL``
+     - ``PYRAMIDAL``, ``ELLIPTIC``
    * - :ref:`Condim <coContact>`
-     - 3
+     - 1, 3, 4, 6
    * - :ref:`Solver <mjtSolver>`
      - ``CG``, ``NEWTON``
    * - Fluid Model
      - :ref:`flInertia`
+   * - :ref:`Tendons <tendon>`
+     - :ref:`Fixed <tendon-fixed>`
 
 The following features are **in development** and coming soon:
 
@@ -216,17 +226,12 @@ The following features are **in development** and coming soon:
    * - Category
      - Feature
    * - :ref:`Geom <mjtGeom>`
-     - ``SDF``, ``HFIELD``, ``ELLIPSOID``, ``CYLINDER``
-   * - :ref:`Condim <coContact>`
-     - 1, 4, 6
-   * - :ref:`Constraint <mjtConstraint>`
-     - :ref:`Frictionloss <coFriction>`, ``CONTACT_FRICTIONLESS``, ``CONTACT_ELLIPTIC``, ``FRICTION_DOF``
+     - ``SDF``. Collisions between (``SPHERE``, ``BOX``, ``MESH``, ``HFIELD``) and ``CYLINDER``. Collisions between
+       (``BOX``, ``MESH``, ``HFIELD``) and ``ELLIPSOID``.
    * - :ref:`Integrator <mjtIntegrator>`
-     - ``IMPLICIT``, ``IMPLICITFAST``
+     - ``IMPLICIT``
    * - Dynamics
      - :ref:`Inverse <mj_inverse>`
-   * - :ref:`Transmission <mjtTrn>`
-     - ``TRN_TENDON``
    * - :ref:`Actuator Dynamics <mjtDyn>`
      - ``MUSCLE``
    * - :ref:`Actuator Gain <mjtGain>`
@@ -235,14 +240,10 @@ The following features are **in development** and coming soon:
      - ``MUSCLE``
    * - :ref:`Tendon Wrapping <mjtWrap>`
      - ``NONE``, ``JOINT``, ``PULLEY``, ``SITE``, ``SPHERE``, ``CYLINDER``
-   * - :ref:`Cone <mjtCone>`
-     - ``ELLIPTIC``
    * - Fluid Model
      - :ref:`flEllipsoid`
    * - :ref:`Tendons <tendon>`
-     - :ref:`Spatial <tendon-spatial>`, :ref:`Fixed <tendon-fixed>`
-   * - :ref:`Equality <mjtEq>`
-     - ``TENDON``
+     - :ref:`Spatial <tendon-spatial>`
    * - :ref:`Sensors <mjtSensor>`
      - All except ``PLUGIN``, ``USER``
    * - Lights
@@ -304,7 +305,7 @@ Collisions between large meshes
   the convex mesh should have roughly **fewer than 32 vertices**.
   With careful
   tuning, MJX can simulate scenes with mesh collisions -- see the MJX
-  `shadow hand <https://github.com/google-deepmind/mujoco/tree/main/mjx/mujoco/mjx/benchmark/model/shadow_hand>`__
+  `shadow hand <https://github.com/google-deepmind/mujoco/tree/main/mjx/mujoco/mjx/test_data/shadow_hand>`__
   config for an example. Speeding up mesh collision detection is an active area of development for MJX.
 
 Large, complex scenes with many contacts

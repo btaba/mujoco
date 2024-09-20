@@ -43,7 +43,7 @@ typedef enum mjtState_ {          // state elements
 
   // convenience values for commonly used state specifications
   mjSTATE_PHYSICS       = mjSTATE_QPOS | mjSTATE_QVEL | mjSTATE_ACT,
-  mjSTATE_FULLPHYSICS   = mjSTATE_PHYSICS | mjSTATE_TIME | mjSTATE_PLUGIN,
+  mjSTATE_FULLPHYSICS   = mjSTATE_TIME | mjSTATE_PHYSICS | mjSTATE_PLUGIN,
   mjSTATE_USER          = mjSTATE_CTRL | mjSTATE_QFRC_APPLIED | mjSTATE_XFRC_APPLIED |
                           mjSTATE_EQ_ACTIVE | mjSTATE_MOCAP_POS | mjSTATE_MOCAP_QUAT |
                           mjSTATE_USERDATA,
@@ -110,7 +110,7 @@ struct mjContact_ {                // result of collision detection functions
 
   // internal storage used by solver
   mjtNum  mu;                      // friction of regularized cone, set by mj_makeConstraint
-  mjtNum  H[36];                   // cone Hessian, set by mj_updateConstraint
+  mjtNum  H[36];                   // cone Hessian, set by mj_constraintUpdate
 
   // contact descriptors set by mj_collideXXX
   int     dim;                     // contact space dimensionality: 1, 3, 4 or 6
@@ -167,29 +167,29 @@ struct mjData_ {
   int     nplugin;           // number of plugin instances
 
   // stack pointer
-  size_t  pstack;            // first available mjtNum address in stack
+  size_t  pstack;            // first available byte in stack
   size_t  pbase;             // value of pstack when mj_markStack was last called
 
   // arena pointer
   size_t  parena;            // first available byte in arena
 
-  // memory utilization stats
-  size_t  maxuse_stack;                      // maximum stack allocation in bytes
-  size_t  maxuse_threadstack[mjMAXTHREAD];   // maximum stack allocation per thread in bytes
-  size_t  maxuse_arena;                      // maximum arena allocation in bytes
-  int     maxuse_con;                        // maximum number of contacts
-  int     maxuse_efc;                        // maximum number of scalar constraints
-
-  // diagnostics
-  mjWarningStat warning[mjNWARNING];  // warning statistics
-  mjTimerStat   timer[mjNTIMER];      // timer statistics
+  // memory utilization statistics
+  size_t  maxuse_stack;                       // maximum stack allocation in bytes
+  size_t  maxuse_threadstack[mjMAXTHREAD];    // maximum stack allocation per thread in bytes
+  size_t  maxuse_arena;                       // maximum arena allocation in bytes
+  int     maxuse_con;                         // maximum number of contacts
+  int     maxuse_efc;                         // maximum number of scalar constraints
 
   // solver statistics
   mjSolverStat  solver[mjNISLAND*mjNSOLVER];  // solver statistics per island, per iteration
-  int     solver_nisland;           // number of islands processed by solver
-  int     solver_niter[mjNISLAND];  // number of solver iterations, per island
-  int     solver_nnz[mjNISLAND];    // number of non-zeros in Hessian or efc_AR, per island
-  mjtNum  solver_fwdinv[2];         // forward-inverse comparison: qfrc, efc
+  int           solver_nisland;               // number of islands processed by solver
+  int           solver_niter[mjNISLAND];      // number of solver iterations, per island
+  int           solver_nnz[mjNISLAND];        // number of nonzeros in Hessian or efc_AR, per island
+  mjtNum        solver_fwdinv[2];             // forward-inverse comparison: qfrc, efc
+
+  // diagnostics
+  mjWarningStat warning[mjNWARNING];          // warning statistics
+  mjTimerStat   timer[mjNTIMER];              // timer statistics
 
   // variable sizes
   int     ne;                // number of equality constraints
@@ -207,8 +207,8 @@ struct mjData_ {
   //-------------------- end of info header
 
   // buffers
-  void*   buffer;            // main buffer; all pointers point in it                (nbuffer bytes)
-  void*   arena;             // arena+stack buffer                     (nstack*sizeof(mjtNum) bytes)
+  void*   buffer;            // main buffer; all pointers point in it            (nbuffer bytes)
+  void*   arena;             // arena+stack buffer                               (narena bytes)
 
   //-------------------- main inputs and outputs of the computation
 
@@ -302,7 +302,7 @@ struct mjData_ {
 
   // computed by mj_collisionTree
   mjtNum*  bvh_aabb_dyn;     // global bounding box (center, size)               (nbvhdynamic x 6)
-  mjtByte* bvh_active;       // volume has been added to collisions              (nbvh x 1)
+  mjtByte* bvh_active;       // was bounding volume checked for collision        (nbvh x 1)
 
   //-------------------- POSITION, VELOCITY dependent
 
@@ -334,12 +334,18 @@ struct mjData_ {
   mjtNum* qHDiagInv;         // 1/diag(D) of modified M                          (nv x 1)
 
   // computed by mj_resetData
-  int*    D_rownnz;          // non-zeros in each row                            (nv x 1)
-  int*    D_rowadr;          // address of each row in D_colind                  (nv x 1)
-  int*    D_colind;          // column indices of non-zeros                      (nD x 1)
-  int*    B_rownnz;          // non-zeros in each row                            (nbody x 1)
-  int*    B_rowadr;          // address of each row in B_colind                  (nbody x 1)
-  int*    B_colind;          // column indices of non-zeros                      (nB x 1)
+  int*    B_rownnz;          // body-dof: non-zeros in each row                  (nbody x 1)
+  int*    B_rowadr;          // body-dof: address of each row in B_colind        (nbody x 1)
+  int*    B_colind;          // body-dof: column indices of non-zeros            (nB x 1)
+  int*    C_rownnz;          // reduced dof-dof: non-zeros in each row           (nv x 1)
+  int*    C_rowadr;          // reduced dof-dof: address of each row in C_colind (nv x 1)
+  int*    C_colind;          // reduced dof-dof: column indices of non-zeros     (nC x 1)
+  int*    mapM2C;            // index mapping from M to C                        (nC x 1)
+  int*    D_rownnz;          // dof-dof: non-zeros in each row                   (nv x 1)
+  int*    D_rowadr;          // dof-dof: address of each row in D_colind         (nv x 1)
+  int*    D_colind;          // dof-dof: column indices of non-zeros             (nD x 1)
+  int*    mapM2D;            // index mapping from M to D                        (nD x 1)
+  int*    mapD2M;            // index mapping from D to M                        (nM x 1)
 
   // computed by mj_implicit/mj_derivative
   mjtNum* qDeriv;            // d (passive + actuator - bias) / d qvel           (nD x 1)
@@ -372,7 +378,7 @@ struct mjData_ {
   //-------------------- arena-allocated: POSITION dependent
 
   // computed by mj_collision
-  mjContact* contact;        // list of all detected contacts                    (ncon x 1)
+  mjContact* contact;        // array of all detected contacts                   (ncon x 1)
 
   // computed by mj_makeConstraint
   int*    efc_type;          // constraint type (mjtConstraint)                  (nefc x 1)
@@ -422,11 +428,11 @@ struct mjData_ {
   //-------------------- arena-allocated: POSITION, VELOCITY, CONTROL/ACCELERATION dependent
 
   // computed by mj_fwdConstraint/mj_inverse
-  mjtNum* efc_b;            // linear cost term: J*qacc_smooth - aref            (nefc x 1)
-  mjtNum* efc_force;        // constraint force in constraint space              (nefc x 1)
-  int*    efc_state;        // constraint state (mjtConstraintState)             (nefc x 1)
+  mjtNum* efc_b;             // linear cost term: J*qacc_smooth - aref           (nefc x 1)
+  mjtNum* efc_force;         // constraint force in constraint space             (nefc x 1)
+  int*    efc_state;         // constraint state (mjtConstraintState)            (nefc x 1)
 
-  // ThreadPool for multithreaded operations
+  // thread pool pointer
   uintptr_t threadpool;
 };
 typedef struct mjData_ mjData;

@@ -26,7 +26,7 @@
     X( mjtNum,  tolerance        )  \
     X( mjtNum,  ls_tolerance     )  \
     X( mjtNum,  noslip_tolerance )  \
-    X( mjtNum,  mpr_tolerance    )  \
+    X( mjtNum,  ccd_tolerance    )  \
     X( mjtNum,  density          )  \
     X( mjtNum,  viscosity        )  \
     X( mjtNum,  o_margin         )  \
@@ -40,7 +40,7 @@
     X( int,     iterations        ) \
     X( int,     ls_iterations     ) \
     X( int,     noslip_iterations ) \
-    X( int,     mpr_iterations    ) \
+    X( int,     ccd_iterations    ) \
     X( int,     disableflags      ) \
     X( int,     enableflags       ) \
     X( int,     disableactuator   ) \
@@ -133,12 +133,14 @@
     XMJV( npaths )             \
     X   ( nnames_map )         \
     X   ( nM )                 \
-    X   ( nD )                 \
     X   ( nB )                 \
+    X   ( nC )                 \
+    X   ( nD )                 \
     X   ( nemax )              \
     X   ( njmax )              \
     X   ( nconmax )            \
     XMJV( ntree )              \
+    X   ( ngravcomp )          \
     X   ( nuserdata )          \
     XMJV( nsensordata )        \
     X   ( npluginstate )       \
@@ -276,22 +278,24 @@
     X   ( int,     cam_mode,              ncam,          1                    ) \
     X   ( int,     cam_bodyid,            ncam,          1                    ) \
     X   ( int,     cam_targetbodyid,      ncam,          1                    ) \
-    X   ( int,     cam_resolution,        ncam,          2                    ) \
-    XMJV( float,   cam_sensorsize,        ncam,          2                    ) \
-    XMJV( float,   cam_intrinsic,         ncam,          4                    ) \
     X   ( mjtNum,  cam_pos,               ncam,          3                    ) \
     X   ( mjtNum,  cam_quat,              ncam,          4                    ) \
     X   ( mjtNum,  cam_poscom0,           ncam,          3                    ) \
     X   ( mjtNum,  cam_pos0,              ncam,          3                    ) \
     X   ( mjtNum,  cam_mat0,              ncam,          9                    ) \
+    XMJV( int,     cam_orthographic,      ncam,          1                    ) \
     XMJV( mjtNum,  cam_fovy,              ncam,          1                    ) \
     XMJV( mjtNum,  cam_ipd,               ncam,          1                    ) \
+    XMJV( int,     cam_resolution,        ncam,          2                    ) \
+    XMJV( float,   cam_sensorsize,        ncam,          2                    ) \
+    XMJV( float,   cam_intrinsic,         ncam,          4                    ) \
     X   ( mjtNum,  cam_user,              ncam,          MJ_M(nuser_cam)      ) \
     X   ( int,     light_mode,            nlight,        1                    ) \
     X   ( int,     light_bodyid,          nlight,        1                    ) \
     X   ( int,     light_targetbodyid,    nlight,        1                    ) \
     XMJV( mjtByte, light_directional,     nlight,        1                    ) \
     XMJV( mjtByte, light_castshadow,      nlight,        1                    ) \
+    XMJV( float,   light_bulbradius,      nlight,        1                    ) \
     XMJV( mjtByte, light_active,          nlight,        1                    ) \
     X   ( mjtNum,  light_pos,             nlight,        3                    ) \
     X   ( mjtNum,  light_dir,             nlight,        3                    ) \
@@ -407,16 +411,19 @@
     X   ( int,     tex_type,              ntex,          1                    ) \
     X   ( int,     tex_height,            ntex,          1                    ) \
     X   ( int,     tex_width,             ntex,          1                    ) \
+    X   ( int,     tex_nchannel,          ntex,          1                    ) \
     X   ( int,     tex_adr,               ntex,          1                    ) \
-    X   ( mjtByte, tex_rgb,               ntexdata,      1                    ) \
+    X   ( mjtByte, tex_data,              ntexdata,      1                    ) \
     XMJV( int,     tex_pathadr,           ntex,          1                    ) \
-    XMJV( int,     mat_texid,             nmat,          1                    ) \
+    XMJV( int,     mat_texid,             nmat,          mjNTEXROLE           ) \
     XMJV( mjtByte, mat_texuniform,        nmat,          1                    ) \
     XMJV( float,   mat_texrepeat,         nmat,          2                    ) \
     XMJV( float,   mat_emission,          nmat,          1                    ) \
     XMJV( float,   mat_specular,          nmat,          1                    ) \
     XMJV( float,   mat_shininess,         nmat,          1                    ) \
     XMJV( float,   mat_reflectance,       nmat,          1                    ) \
+    XMJV( float,   mat_metallic,          nmat,          1                    ) \
+    XMJV( float,   mat_roughness,         nmat,          1                    ) \
     XMJV( float,   mat_rgba,              nmat,          4                    ) \
     X   ( int,     pair_dim,              npair,         1                    ) \
     X   ( int,     pair_geom1,            npair,         1                    ) \
@@ -432,6 +439,7 @@
     XMJV( int,     eq_type,               neq,           1                    ) \
     XMJV( int,     eq_obj1id,             neq,           1                    ) \
     XMJV( int,     eq_obj2id,             neq,           1                    ) \
+    XMJV( int,     eq_objtype,            neq,           1                    ) \
     X   ( mjtByte, eq_active0,            neq,           1                    ) \
     X   ( mjtNum,  eq_solref,             neq,           mjNREF               ) \
     X   ( mjtNum,  eq_solimp,             neq,           mjNIMP               ) \
@@ -633,12 +641,18 @@
     X   ( mjtNum,    subtree_angmom,    nbody,       3           ) \
     X   ( mjtNum,    qH,                nM,          1           ) \
     X   ( mjtNum,    qHDiagInv,         nv,          1           ) \
-    X   ( int,       D_rownnz,          nv,          1           ) \
-    X   ( int,       D_rowadr,          nv,          1           ) \
-    X   ( int,       D_colind,          nD,          1           ) \
     X   ( int,       B_rownnz,          nbody,       1           ) \
     X   ( int,       B_rowadr,          nbody,       1           ) \
     X   ( int,       B_colind,          nB,          1           ) \
+    X   ( int,       C_rownnz,          nv,          1           ) \
+    X   ( int,       C_rowadr,          nv,          1           ) \
+    X   ( int,       C_colind,          nC,          1           ) \
+    X   ( int,       mapM2C,            nC,          1           ) \
+    X   ( int,       D_rownnz,          nv,          1           ) \
+    X   ( int,       D_rowadr,          nv,          1           ) \
+    X   ( int,       D_colind,          nD,          1           ) \
+    X   ( int,       mapM2D,            nD,          1           ) \
+    X   ( int,       mapD2M,            nM,          1           ) \
     X   ( mjtNum,    qDeriv,            nD,          1           ) \
     X   ( mjtNum,    qLU,               nD,          1           ) \
     X   ( mjtNum,    actuator_force,    nu,          1           ) \

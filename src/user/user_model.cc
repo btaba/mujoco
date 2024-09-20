@@ -15,30 +15,35 @@
 #include "user/user_model.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <array>
 #include <csetjmp>
-#include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <iostream>
+#include <exception>
 #include <map>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <mujoco/mjdata.h>
 #include <mujoco/mjmacro.h>
 #include <mujoco/mjmodel.h>
+#include <mujoco/mjspec.h>
 #include <mujoco/mjtnum.h>
 #include <mujoco/mjplugin.h>
-#include <mujoco/mjvisualize.h>
 #include "cc/array_safety.h"
 #include "engine/engine_forward.h"
 #include "engine/engine_io.h"
+#include "engine/engine_name.h"
 #include "engine/engine_plugin.h"
 #include "engine/engine_setconst.h"
 #include "engine/engine_support.h"
-#include "engine/engine_util_blas.h"
 #include "engine/engine_util_errmem.h"
 #include "engine/engine_util_misc.h"
 #include "user/user_api.h"
@@ -49,41 +54,73 @@ namespace {
 namespace mju = ::mujoco::util;
 using std::string;
 using std::vector;
-}  // namespace
-
-// pthread on Linux, std::thread on Mac and Windows
-#if defined(__APPLE__) || defined(_WIN32)
-  #include <thread>
-  using std::thread;
-
-  int getnumproc(void) {
-    return thread::hardware_concurrency();
-  }
-#else
-  #include <pthread.h>
-  #include <sys/sysinfo.h>
-
-  int getnumproc(void) {
-    return get_nprocs();
-  }
-#endif
+constexpr int kMaxCompilerThreads = 16;
 
 
-// copy real-valued vector
-template <class T1, class T2>
-static void copyvec(T1* dest, T2* src, int n) {
-  for (int i=0; i<n; i++) {
-    dest[i] = (T1)src[i];
-  }
+
+//---------------------------------- LOCAL UTILITY FUNCTIONS ---------------------------------------
+
+constexpr double kFrameEps = 1e-6;  // difference below which frames are considered equal
+
+// return true if two 3-vectors are element-wise less than kFrameEps apart
+template <typename T>
+bool IsSameVec(const T pos1[3], const T pos2[3]) {
+  static_assert(std::is_floating_point_v<T>);
+  return std::abs(pos1[0] - pos2[0]) < kFrameEps &&
+         std::abs(pos1[1] - pos2[1]) < kFrameEps &&
+         std::abs(pos1[2] - pos2[2]) < kFrameEps;
+}
+
+// return true if two quaternions are element-wise less than kFrameEps apart, including double-cover
+template <typename T>
+bool IsSameQuat(const T quat1[4], const T quat2[4]) {
+  static_assert(std::is_floating_point_v<T>);
+  bool same_quat_minus = std::abs(quat1[0] - quat2[0]) < kFrameEps &&
+                         std::abs(quat1[1] - quat2[1]) < kFrameEps &&
+                         std::abs(quat1[2] - quat2[2]) < kFrameEps &&
+                         std::abs(quat1[3] - quat2[3]) < kFrameEps;
+
+  bool same_quat_plus = std::abs(quat1[0] + quat2[0]) < kFrameEps &&
+                        std::abs(quat1[1] + quat2[1]) < kFrameEps &&
+                        std::abs(quat1[2] + quat2[2]) < kFrameEps &&
+                        std::abs(quat1[3] + quat2[3]) < kFrameEps;
+
+  return same_quat_minus || same_quat_plus;
 }
 
 
+// compare two poses
+template <typename T>
+bool IsSamePose(const T pos1[3], const T pos2[3], const T quat1[4], const T quat2[4]) {
+  // check position if given
+  if (pos1 && pos2 && !IsSameVec(pos1, pos2)) {
+    return false;
+  }
+
+  // check orientation if given
+  if (quat1 && quat2 && !IsSameQuat(quat1, quat2)) {
+    return false;
+  }
+
+  return true;
+}
+
+// detect null pose
+template <typename T>
+bool IsNullPose(const T pos[3], const T quat[4]) {
+  T zero[3] = {0, 0, 0};
+  T qunit[4] = {1, 0, 0, 0};
+  return IsSamePose(pos, zero, quat, qunit);
+}
+
+
+}  // namespace
 
 //---------------------------------- CONSTRUCTOR AND DESTRUCTOR ------------------------------------
 
 // constructor
 mjCModel::mjCModel() {
-  mjs_defaultSpec(spec);
+  mjs_defaultSpec(&spec);
   elemtype = mjOBJ_UNKNOWN;
   spec_comment_.clear();
   spec_modelfiledir_.clear();
@@ -102,33 +139,13 @@ mjCModel::mjCModel() {
 #endif
 
   nplugin = 0;
-  //------------------------ private variables
-  cameras.clear();
-  lights.clear();
-  flexes.clear();
-  meshes.clear();
-  skins.clear();
-  hfields.clear();
-  textures.clear();
-  materials.clear();
-  pairs.clear();
-  excludes.clear();
-  equalities.clear();
-  tendons.clear();
-  actuators.clear();
-  numerics.clear();
-  texts.clear();
-  tuples.clear();
-  keys.clear();
-  defaults.clear();
-  prefix = "";
-  suffix = "";
   Clear();
 
   //------------------------ master default set
-  defaults.push_back(new mjCDef);
+  defaults_.push_back(new mjCDef);
+  defaults_.back()->name = "main";
 
-  //------------------------ world body
+  // world body
   mjCBody* world = new mjCBody(this);
   mjuu_zerovec(world->pos, 3);
   mjuu_setvec(world->quat, 1, 0, 0, 0);
@@ -138,8 +155,9 @@ mjCModel::mjCModel() {
   world->parentid = 0;
   world->weldid = 0;
   world->name = "world";
-  world->def = defaults[0];
-  bodies.push_back(world);
+  world->classname = "main";
+  def_map["main"] = Default();
+  bodies_.push_back(world);
 
   // create mjCBase lists from children lists
   CreateObjectLists();
@@ -154,6 +172,7 @@ mjCModel::mjCModel() {
 
 
 mjCModel::mjCModel(const mjCModel& other) {
+  CreateObjectLists();
   *this = other;
 }
 
@@ -167,11 +186,18 @@ mjCModel& mjCModel::operator=(const mjCModel& other) {
     *static_cast<mjSpec*>(this) = static_cast<const mjSpec&>(other);
 
     // the world copy constructor takes care of copying the tree
-    mjCBody* world = new mjCBody(*other.bodies[0], this);
-    bodies.push_back(world);
+    mjCBody* world = new mjCBody(*other.bodies_[0], this);
+    bodies_.push_back(world);
 
     // add everything else
     *this += other;
+
+    // add keyframes
+    CopyList(keys_, other.keys_);
+
+    // create new default tree
+    mjCDef* subtree = new mjCDef(*other.defaults_[0]);
+    *this += *subtree;
 
     // copy name maps
     for (int i=0; i<mjNOBJECT; i++) {
@@ -186,9 +212,7 @@ mjCModel& mjCModel::operator=(const mjCModel& other) {
 // copy vector of elements from another model to this model
 template <class T>
 void mjCModel::CopyList(std::vector<T*>& dest,
-                        const std::vector<T*>& source,
-                        std::map<mjCDef*, int>& def_map,
-                        const std::vector<mjCDef*>& defaults) {
+                        const std::vector<T*>& source) {
   // loop over the elements from the other model
   int nsource = (int)source.size();
   for (int i = 0; i < nsource; i++) {
@@ -200,13 +224,14 @@ void mjCModel::CopyList(std::vector<T*>& dest,
       candidate->ResolveReferences(this);
     } catch (mjCError err) {
       // if not present, skip the element
+      // TODO: do not skip elements that contain user errors
       delete candidate;
       continue;
     }
     // copy the element from the other model to this model
+    source[i]->ForgetKeyframes();
     dest.push_back(candidate);
     dest.back()->model = this;
-    dest.back()->def = defaults[def_map[candidate->def]];
     dest.back()->id = -1;
   }
   if (!dest.empty()) {
@@ -216,71 +241,107 @@ void mjCModel::CopyList(std::vector<T*>& dest,
 
 
 
+template <class T>
+static void resetlist(std::vector<T*>& list) {
+  for (auto element : list) {
+    element->id = -1;
+  }
+  list.clear();
+}
+
+
+
+void mjCModel::ResetTreeLists() {
+  mjCBody *world = bodies_[0];
+  resetlist(bodies_);
+  resetlist(joints_);
+  resetlist(geoms_);
+  resetlist(sites_);
+  resetlist(cameras_);
+  resetlist(lights_);
+  resetlist(frames_);
+  world->id = 0;
+  bodies_.push_back(world);
+}
+
+
+
+// save associated state addresses in related elements
+void mjCModel::SaveDofOffsets() {
+  int qposadr = 0;
+  int dofadr = 0;
+  int actadr = 0;
+  int nmocap = 0;
+
+  for (auto joint : joints_) {
+    joint->qposadr_ = qposadr;
+    joint->dofadr_ = dofadr;
+    qposadr += joint->nq();
+    dofadr += joint->nv();
+  }
+
+  for (auto actuator : actuators_) {
+    if (actuator->spec.actdim > 0) {
+      actuator->actdim_ = actuator->spec.actdim;
+    } else {
+      actuator->actdim_ = (actuator->spec.dyntype != mjDYN_NONE);
+    }
+    actuator->actadr_ = actuator->actdim_ ? actadr : -1;
+    actadr += actuator->actdim_;
+  }
+
+  for (mjCBody* body : bodies_) {
+    if (body->spec.mocap) {
+      body->mocapid = nmocap;
+      nmocap++;
+    } else {
+      body->mocapid = -1;
+    }
+  }
+}
+
+
+
 mjCModel& mjCModel::operator+=(const mjCModel& other) {
   // create global lists
-  MakeLists(bodies[0]);
-  CreateObjectLists();
-  ProcessLists();
+  mjCBody *world = bodies_[0];
+  if (compiled) {
+    ResetTreeLists();
+  }
+  MakeLists(world);
+  ProcessLists(/*checkrepeat=*/false);
 
   // copy all elements not in the tree
-  std::map<mjCDef*, int> def_map;
-  int ndefaults = (int)other.defaults.size();
-  for (int i = 0; i < ndefaults; i++) {
-    defaults.push_back(new mjCDef(*other.defaults[i]));
-    def_map[other.defaults[i]] = i;
+  if (this != &other) {
+    // do not copy assets for self-attach
+    // TODO: asset should be copied only when referenced
+    CopyList(meshes_, other.meshes_);
+    CopyList(skins_, other.skins_);
+    CopyList(hfields_, other.hfields_);
+    CopyList(textures_, other.textures_);
+    CopyList(materials_, other.materials_);
+    for (const auto& key : other.key_pending_) {
+      key_pending_.push_back(key);
+    }
   }
-  CopyList(flexes, other.flexes, def_map, defaults);
-  CopyList(meshes, other.meshes, def_map, defaults);
-  CopyList(skins, other.skins, def_map, defaults);
-  CopyList(hfields, other.hfields, def_map, defaults);
-  CopyList(textures, other.textures, def_map, defaults);
-  CopyList(materials, other.materials, def_map, defaults);
-  CopyList(pairs, other.pairs, def_map, defaults);
-  CopyList(excludes, other.excludes, def_map, defaults);
-  CopyList(tendons, other.tendons, def_map, defaults);
-  CopyList(equalities, other.equalities, def_map, defaults);
-  CopyList(actuators, other.actuators, def_map, defaults);
-  CopyList(sensors, other.sensors, def_map, defaults);
-  CopyList(numerics, other.numerics, def_map, defaults);
-  CopyList(texts, other.texts, def_map, defaults);
-  CopyList(tuples, other.tuples, def_map, defaults);
-  CopyList(keys, other.keys, def_map, defaults);
+  CopyList(flexes_, other.flexes_);
+  CopyList(pairs_, other.pairs_);
+  CopyList(excludes_, other.excludes_);
+  CopyList(tendons_, other.tendons_);
+  CopyList(equalities_, other.equalities_);
+  CopyList(actuators_, other.actuators_);
+  CopyList(sensors_, other.sensors_);
+  CopyList(numerics_, other.numerics_);
+  CopyList(texts_, other.texts_);
+  CopyList(tuples_, other.tuples_);
 
   // plugins are global
-  plugins = other.plugins;
-  active_plugins = other.active_plugins;
+  plugins_ = other.plugins_;
+  active_plugins_ = other.active_plugins_;
 
-  // update defaults for the copied objects
-  for (int i = 1; i < other.bodies.size(); i++) {
-    bodies[i]->def = defaults[def_map[other.bodies[i]->def]];
-  }
-  for (int i = 0; i < other.joints.size(); i++) {
-    joints[i]->def = defaults[def_map[other.joints[i]->def]];
-  }
-  for (int i = 0; i < other.geoms.size(); i++) {
-    geoms[i]->def = defaults[def_map[other.geoms[i]->def]];
-  }
-  for (int i = 0; i < other.sites.size(); i++) {
-    sites[i]->def = defaults[def_map[other.sites[i]->def]];
-  }
-  for (int i = 0; i < other.cameras.size(); i++) {
-    cameras[i]->def = defaults[def_map[other.cameras[i]->def]];
-  }
-  for (int i = 0; i < other.lights.size(); i++) {
-    lights[i]->def = defaults[def_map[other.lights[i]->def]];
-  }
-
-  // restore to the same state as other
+  // restore to the original state
   if (!compiled) {
-    mjCBody* world = bodies[0];
-    bodies.clear();
-    frames.clear();
-    joints.clear();
-    geoms.clear();
-    sites.clear();
-    cameras.clear();
-    lights.clear();
-    bodies.push_back(world);
+    ResetTreeLists();
   }
 
   PointToLocal();
@@ -289,47 +350,225 @@ mjCModel& mjCModel::operator+=(const mjCModel& other) {
 
 
 
+template <class T>
+void mjCModel::RemoveFromList(std::vector<T*>& list, const mjCModel& other) {
+  int nlist = (int)list.size();
+  int removed = 0;
+  for (int i = 0; i < nlist; i++) {
+    T* element = list[i];
+    element->id -= removed;
+    try {
+      // check if the element contains an error
+      element->NameSpace(&other);
+      element->CopyFromSpec();
+      element->ResolveReferences(&other);
+    } catch (mjCError err) {
+      continue;
+    }
+    try {
+      // check if the element references something that was removed
+      element->NameSpace(this);
+      element->CopyFromSpec();
+      element->ResolveReferences(this);
+    } catch (mjCError err) {
+      ids[element->elemtype].erase(element->name);
+      delete element;
+      list.erase(list.begin() + i);
+      nlist--;
+      i--;
+      removed++;
+    }
+  }
+}
+
+
+
+template <>
+void mjCModel::DeleteAll<mjCKey>(std::vector<mjCKey*>& elements) {
+  for (mjCKey* element : elements) {
+    delete element;
+  }
+  elements.clear();
+}
+
+
+
+mjCModel& mjCModel::operator-=(const mjCBody& subtree) {
+  mjCModel oldmodel(*this);
+
+  // create global lists in the old model if not compiled
+  if (!oldmodel.IsCompiled()) {
+    oldmodel.MakeLists(oldmodel.bodies_[0]);
+    oldmodel.ProcessLists(/*checkrepeat=*/false);
+  }
+
+  // remove body from tree
+  mjCBody* world = bodies_[0];
+  *world -= subtree;
+
+  // create global lists
+  if (compiled) {
+    ResetTreeLists();
+  }
+  MakeLists(world);
+  ProcessLists(/*checkrepeat=*/false);
+
+  // store keyframes in the old model
+  oldmodel.key_pending_.clear();
+  oldmodel.StoreKeyframes();
+
+  // check if we have to remove anything else
+  RemoveFromList(pairs_, oldmodel);
+  RemoveFromList(excludes_, oldmodel);
+  RemoveFromList(tendons_, oldmodel);
+  RemoveFromList(equalities_, oldmodel);
+  RemoveFromList(actuators_, oldmodel);
+  RemoveFromList(sensors_, oldmodel);
+
+  // move all keyframes to pending so that they will be resized
+  DeleteAll(keys_);
+  for (const auto& key : oldmodel.key_pending_) {
+    key_pending_.push_back(key);
+  }
+
+  // restore to the original state
+  if (!compiled) {
+    ResetTreeLists();
+  }
+
+  PointToLocal();
+  return *this;
+}
+
+
+
+// add default tree to this model
+mjCModel_& mjCModel::operator+=(mjCDef& subtree) {
+  defaults_.push_back(&subtree);
+  def_map[subtree.name] = &subtree;
+
+  // set parent to the main default if this is not the only default in the model
+  if (!subtree.parent && &subtree != defaults_[0]) {
+    subtree.parent = defaults_[0];
+    defaults_[0]->child.push_back(&subtree);
+  }
+
+  for (auto def : subtree.child) {
+    *this += *def;  // triggers recursive call
+  }
+  return *this;
+}
+
+
+
+template <class T>
+void deletefromlist(std::vector<T*>* list, mjsElement* element) {
+  if (!list) {
+    return;
+  }
+  for (int j = 0; j < list->size(); ++j) {
+    list->at(j)->id = -1;
+    if (list->at(j) == element) {
+      delete list->at(j);
+      list->erase(list->begin() + j);
+      j--;
+    }
+  }
+}
+
+
+
+// discard all invalid elements from all lists
+void mjCModel::DeleteElement(mjsElement* el) {
+  mjCBody *world = bodies_[0];
+  if (compiled) {
+    ResetTreeLists();
+  }
+
+  switch (el->elemtype) {
+    case mjOBJ_BODY:
+      throw mjCError(nullptr, "bodies cannot be deleted, use detach instead");
+      break;
+
+    case mjOBJ_GEOM:
+      deletefromlist(&(static_cast<mjCGeom*>(el)->body->geoms), el);
+      break;
+
+    case mjOBJ_SITE:
+      deletefromlist(&(static_cast<mjCSite*>(el)->body->sites), el);
+      break;
+
+    case mjOBJ_JOINT:
+      deletefromlist(&(static_cast<mjCJoint*>(el)->body->joints), el);
+      break;
+
+    case mjOBJ_LIGHT:
+      deletefromlist(&(static_cast<mjCLight*>(el)->body->lights), el);
+      break;
+
+    case mjOBJ_CAMERA:
+      deletefromlist(&(static_cast<mjCCamera*>(el)->body->cameras), el);
+      break;
+
+    default:
+      deletefromlist(object_lists_[el->elemtype], el);
+      break;
+  }
+
+  if (compiled) {
+    MakeLists(world);
+    ProcessLists(/*checkrepeat=*/false);
+  }
+}
+
+
+
 // TODO: we should not use C-type casting with multiple C++ inheritance
 void mjCModel::CreateObjectLists() {
   for (int i = 0; i < mjNOBJECT; ++i) {
-    object_lists[i] = nullptr;
+    object_lists_[i] = nullptr;
   }
 
-  object_lists[mjOBJ_BODY]     = (std::vector<mjCBase*>*) &bodies;
-  object_lists[mjOBJ_XBODY]    = (std::vector<mjCBase*>*) &bodies;
-  object_lists[mjOBJ_JOINT]    = (std::vector<mjCBase*>*) &joints;
-  object_lists[mjOBJ_GEOM]     = (std::vector<mjCBase*>*) &geoms;
-  object_lists[mjOBJ_SITE]     = (std::vector<mjCBase*>*) &sites;
-  object_lists[mjOBJ_CAMERA]   = (std::vector<mjCBase*>*) &cameras;
-  object_lists[mjOBJ_LIGHT]    = (std::vector<mjCBase*>*) &lights;
-  object_lists[mjOBJ_FLEX]     = (std::vector<mjCBase*>*) &flexes;
-  object_lists[mjOBJ_MESH]     = (std::vector<mjCBase*>*) &meshes;
-  object_lists[mjOBJ_SKIN]     = (std::vector<mjCBase*>*) &skins;
-  object_lists[mjOBJ_HFIELD]   = (std::vector<mjCBase*>*) &hfields;
-  object_lists[mjOBJ_TEXTURE]  = (std::vector<mjCBase*>*) &textures;
-  object_lists[mjOBJ_MATERIAL] = (std::vector<mjCBase*>*) &materials;
-  object_lists[mjOBJ_PAIR]     = (std::vector<mjCBase*>*) &pairs;
-  object_lists[mjOBJ_EXCLUDE]  = (std::vector<mjCBase*>*) &excludes;
-  object_lists[mjOBJ_EQUALITY] = (std::vector<mjCBase*>*) &equalities;
-  object_lists[mjOBJ_TENDON]   = (std::vector<mjCBase*>*) &tendons;
-  object_lists[mjOBJ_ACTUATOR] = (std::vector<mjCBase*>*) &actuators;
-  object_lists[mjOBJ_SENSOR]   = (std::vector<mjCBase*>*) &sensors;
-  object_lists[mjOBJ_NUMERIC]  = (std::vector<mjCBase*>*) &numerics;
-  object_lists[mjOBJ_TEXT]     = (std::vector<mjCBase*>*) &texts;
-  object_lists[mjOBJ_TUPLE]    = (std::vector<mjCBase*>*) &tuples;
-  object_lists[mjOBJ_KEY]      = (std::vector<mjCBase*>*) &keys;
-  object_lists[mjOBJ_PLUGIN]   = (std::vector<mjCBase*>*) &plugins;
+  object_lists_[mjOBJ_BODY]     = (std::vector<mjCBase*>*) &bodies_;
+  object_lists_[mjOBJ_XBODY]    = (std::vector<mjCBase*>*) &bodies_;
+  object_lists_[mjOBJ_JOINT]    = (std::vector<mjCBase*>*) &joints_;
+  object_lists_[mjOBJ_GEOM]     = (std::vector<mjCBase*>*) &geoms_;
+  object_lists_[mjOBJ_SITE]     = (std::vector<mjCBase*>*) &sites_;
+  object_lists_[mjOBJ_CAMERA]   = (std::vector<mjCBase*>*) &cameras_;
+  object_lists_[mjOBJ_LIGHT]    = (std::vector<mjCBase*>*) &lights_;
+  object_lists_[mjOBJ_FLEX]     = (std::vector<mjCBase*>*) &flexes_;
+  object_lists_[mjOBJ_MESH]     = (std::vector<mjCBase*>*) &meshes_;
+  object_lists_[mjOBJ_SKIN]     = (std::vector<mjCBase*>*) &skins_;
+  object_lists_[mjOBJ_HFIELD]   = (std::vector<mjCBase*>*) &hfields_;
+  object_lists_[mjOBJ_TEXTURE]  = (std::vector<mjCBase*>*) &textures_;
+  object_lists_[mjOBJ_MATERIAL] = (std::vector<mjCBase*>*) &materials_;
+  object_lists_[mjOBJ_PAIR]     = (std::vector<mjCBase*>*) &pairs_;
+  object_lists_[mjOBJ_EXCLUDE]  = (std::vector<mjCBase*>*) &excludes_;
+  object_lists_[mjOBJ_EQUALITY] = (std::vector<mjCBase*>*) &equalities_;
+  object_lists_[mjOBJ_TENDON]   = (std::vector<mjCBase*>*) &tendons_;
+  object_lists_[mjOBJ_ACTUATOR] = (std::vector<mjCBase*>*) &actuators_;
+  object_lists_[mjOBJ_SENSOR]   = (std::vector<mjCBase*>*) &sensors_;
+  object_lists_[mjOBJ_NUMERIC]  = (std::vector<mjCBase*>*) &numerics_;
+  object_lists_[mjOBJ_TEXT]     = (std::vector<mjCBase*>*) &texts_;
+  object_lists_[mjOBJ_TUPLE]    = (std::vector<mjCBase*>*) &tuples_;
+  object_lists_[mjOBJ_KEY]      = (std::vector<mjCBase*>*) &keys_;
+  object_lists_[mjOBJ_PLUGIN]   = (std::vector<mjCBase*>*) &plugins_;
 }
 
 
 
 void mjCModel::PointToLocal() {
-  spec.element = static_cast<mjElement*>(this);
-  spec.comment = (mjString)&spec_comment_;
-  spec.modelfiledir = (mjString)&spec_modelfiledir_;
-  spec.modelname = (mjString)&spec_modelname_;
-  spec.meshdir = (mjString)&spec_meshdir_;
-  spec.texturedir = (mjString)&spec_texturedir_;
+  spec.element = static_cast<mjsElement*>(this);
+  spec.comment = &spec_comment_;
+  spec.modelfiledir = &spec_modelfiledir_;
+  spec.modelname = &spec_modelname_;
+  spec.meshdir = &spec_meshdir_;
+  spec.texturedir = &spec_texturedir_;
+  comment = nullptr;
+  modelfiledir = nullptr;
+  modelname = nullptr;
+  meshdir = nullptr;
+  texturedir = nullptr;
 }
 
 
@@ -341,11 +580,6 @@ void mjCModel::CopyFromSpec() {
   modelname_ = spec_modelname_;
   meshdir_ = spec_meshdir_;
   texturedir_ = spec_texturedir_;
-  comment = (mjString)&comment_;
-  modelfiledir = (mjString)&modelfiledir_;
-  modelname = (mjString)&modelname_;
-  meshdir = (mjString)&meshdir_;
-  texturedir = (mjString)&texturedir_;
 }
 
 
@@ -353,50 +587,30 @@ void mjCModel::CopyFromSpec() {
 // destructor
 mjCModel::~mjCModel() {
   // delete kinematic tree and all objects allocated in it
-  delete bodies[0];
+  delete bodies_[0];
 
   // delete objects allocated in mjCModel
-  for (int i=0; i<flexes.size(); i++) delete flexes[i];
-  for (int i=0; i<meshes.size(); i++) delete meshes[i];
-  for (int i=0; i<skins.size(); i++) delete skins[i];
-  for (int i=0; i<hfields.size(); i++) delete hfields[i];
-  for (int i=0; i<textures.size(); i++) delete textures[i];
-  for (int i=0; i<materials.size(); i++) delete materials[i];
-  for (int i=0; i<pairs.size(); i++) delete pairs[i];
-  for (int i=0; i<excludes.size(); i++) delete excludes[i];
-  for (int i=0; i<equalities.size(); i++) delete equalities[i];
-  for (int i=0; i<tendons.size(); i++) delete tendons[i];  // also deletes wraps
-  for (int i=0; i<actuators.size(); i++) delete actuators[i];
-  for (int i=0; i<sensors.size(); i++) delete sensors[i];
-  for (int i=0; i<numerics.size(); i++) delete numerics[i];
-  for (int i=0; i<texts.size(); i++) delete texts[i];
-  for (int i=0; i<tuples.size(); i++) delete tuples[i];
-  for (int i=0; i<keys.size(); i++) delete keys[i];
-  for (int i=0; i<defaults.size(); i++) delete defaults[i];
+  for (int i=0; i<flexes_.size(); i++) delete flexes_[i];
+  for (int i=0; i<meshes_.size(); i++) delete meshes_[i];
+  for (int i=0; i<skins_.size(); i++) delete skins_[i];
+  for (int i=0; i<hfields_.size(); i++) delete hfields_[i];
+  for (int i=0; i<textures_.size(); i++) delete textures_[i];
+  for (int i=0; i<materials_.size(); i++) delete materials_[i];
+  for (int i=0; i<pairs_.size(); i++) delete pairs_[i];
+  for (int i=0; i<excludes_.size(); i++) delete excludes_[i];
+  for (int i=0; i<equalities_.size(); i++) delete equalities_[i];
+  for (int i=0; i<tendons_.size(); i++) delete tendons_[i];  // also deletes wraps
+  for (int i=0; i<actuators_.size(); i++) delete actuators_[i];
+  for (int i=0; i<sensors_.size(); i++) delete sensors_[i];
+  for (int i=0; i<numerics_.size(); i++) delete numerics_[i];
+  for (int i=0; i<texts_.size(); i++) delete texts_[i];
+  for (int i=0; i<tuples_.size(); i++) delete tuples_[i];
+  for (int i=0; i<keys_.size(); i++) delete keys_[i];
+  for (int i=0; i<defaults_.size(); i++) delete defaults_[i];
 
   if (plugin_owner) {
-    for (int i=0; i<plugins.size(); i++) delete plugins[i];
+    for (int i=0; i<plugins_.size(); i++) delete plugins_[i];
   }
-
-  // clear pointer lists created in model construction
-  flexes.clear();
-  meshes.clear();
-  skins.clear();
-  hfields.clear();
-  textures.clear();
-  materials.clear();
-  pairs.clear();
-  excludes.clear();
-  equalities.clear();
-  tendons.clear();
-  actuators.clear();
-  sensors.clear();
-  numerics.clear();
-  texts.clear();
-  tuples.clear();
-  keys.clear();
-  plugins.clear();
-  defaults.clear();
 
   // clear sizes and pointer lists created in Compile
   Clear();
@@ -405,7 +619,7 @@ mjCModel::~mjCModel() {
 
 
 // clear objects allocated by Compile
-void mjCModel::Clear(void) {
+void mjCModel::Clear() {
   // sizes set from list lengths
   nbody = 0;
   nbvh = 0;
@@ -473,12 +687,13 @@ void mjCModel::Clear(void) {
   nmocap = 0;
 
   // pointer lists created by Compile
-  bodies.clear();
-  joints.clear();
-  geoms.clear();
-  sites.clear();
-  cameras.clear();
-  lights.clear();
+  bodies_.clear();
+  joints_.clear();
+  geoms_.clear();
+  sites_.clear();
+  cameras_.clear();
+  lights_.clear();
+  frames_.clear();
 
   // internal variables
   hasImplicitPluginElem = false;
@@ -501,119 +716,124 @@ T* mjCModel::AddObject(vector<T*>& list, string type) {
 }
 
 
-// add object of any type, with def parameter
+// add object of any type, with default parameter
 template <class T>
-T* mjCModel::AddObjectDef(vector<T*>& list, string type, mjCDef* def) {
-  T* obj = new T(this, def ? def : defaults[0]);
+T* mjCModel::AddObjectDefault(vector<T*>& list, string type, mjCDef* def) {
+  T* obj = new T(this, def ? def : defaults_[0]);
   obj->id = (int)list.size();
-  obj->def = def ? def : defaults[0];
+  obj->classname = def ? def->name : "main";
   list.push_back(obj);
   return obj;
 }
 
 
 // add flex
-mjCFlex* mjCModel::AddFlex(void) {
-  return AddObject(flexes, "flex");
+mjCFlex* mjCModel::AddFlex() {
+  return AddObject(flexes_, "flex");
 }
 
 
 // add mesh
 mjCMesh* mjCModel::AddMesh(mjCDef* def) {
-  return AddObjectDef(meshes, "mesh", def);
+  return AddObjectDefault(meshes_, "mesh", def);
 }
 
 
 // add skin
-mjCSkin* mjCModel::AddSkin(void) {
-  return AddObject(skins, "skin");
+mjCSkin* mjCModel::AddSkin() {
+  return AddObject(skins_, "skin");
 }
 
 
 // add hfield
-mjCHField* mjCModel::AddHField(void) {
-  return AddObject(hfields, "hfield");
+mjCHField* mjCModel::AddHField() {
+  return AddObject(hfields_, "hfield");
 }
 
 
 // add texture
-mjCTexture* mjCModel::AddTexture(void) {
-  return AddObject(textures, "texture");
+mjCTexture* mjCModel::AddTexture() {
+  return AddObject(textures_, "texture");
 }
 
 
 // add material
 mjCMaterial* mjCModel::AddMaterial(mjCDef* def) {
-  return AddObjectDef(materials, "material", def);
+  return AddObjectDefault(materials_, "material", def);
 }
 
 
 // add geom pair to include in collisions
 mjCPair* mjCModel::AddPair(mjCDef* def) {
-  return AddObjectDef(pairs, "pair", def);
+  return AddObjectDefault(pairs_, "pair", def);
 }
 
 
 // add body pair to exclude from collisions
-mjCBodyPair* mjCModel::AddExclude(void) {
-  return AddObject(excludes, "exclude");
+mjCBodyPair* mjCModel::AddExclude() {
+  return AddObject(excludes_, "exclude");
 }
 
 
 // add constraint
 mjCEquality* mjCModel::AddEquality(mjCDef* def) {
-  return AddObjectDef(equalities, "equality", def);
+  return AddObjectDefault(equalities_, "equality", def);
 }
 
 
 // add tendon
 mjCTendon* mjCModel::AddTendon(mjCDef* def) {
-  return AddObjectDef(tendons, "tendon", def);
+  return AddObjectDefault(tendons_, "tendon", def);
 }
 
 
 // add actuator
 mjCActuator* mjCModel::AddActuator(mjCDef* def) {
-  return AddObjectDef(actuators, "actuator", def);
+  return AddObjectDefault(actuators_, "actuator", def);
 }
 
 
 // add sensor
-mjCSensor* mjCModel::AddSensor(void) {
-  return AddObject(sensors, "sensor");
+mjCSensor* mjCModel::AddSensor() {
+  return AddObject(sensors_, "sensor");
 }
 
 
 
 // add custom
-mjCNumeric* mjCModel::AddNumeric(void) {
-  return AddObject(numerics, "numeric");
+mjCNumeric* mjCModel::AddNumeric() {
+  return AddObject(numerics_, "numeric");
 }
 
 
 // add text
-mjCText* mjCModel::AddText(void) {
-  return AddObject(texts, "text");
+mjCText* mjCModel::AddText() {
+  return AddObject(texts_, "text");
 }
 
 
 // add tuple
-mjCTuple* mjCModel::AddTuple(void) {
-  return AddObject(tuples, "tuple");
+mjCTuple* mjCModel::AddTuple() {
+  return AddObject(tuples_, "tuple");
 }
 
 
 // add keyframe
-mjCKey* mjCModel::AddKey(void) {
-  return AddObject(keys, "key");
+mjCKey* mjCModel::AddKey() {
+  return AddObject(keys_, "key");
 }
 
 
 // add plugin instance
-mjCPlugin* mjCModel::AddPlugin(void) {
-  return AddObject(plugins, "plugin");
+mjCPlugin* mjCModel::AddPlugin() {
+  return AddObject(plugins_, "plugin");
 }
 
+
+// append spec to spec
+void mjCModel::AppendSpec(mjSpec* spec) {
+  specs_.push_back(spec);
+}
 
 
 
@@ -621,10 +841,10 @@ mjCPlugin* mjCModel::AddPlugin(void) {
 
 // get number of objects of specified type
 int mjCModel::NumObjects(mjtObj type) {
-  if (!object_lists[type]) {
+  if (!object_lists_[type]) {
     return 0;
   }
-  return (int) object_lists[type]->size();
+  return (int) object_lists_[type]->size();
 }
 
 
@@ -634,70 +854,150 @@ mjCBase* mjCModel::GetObject(mjtObj type, int id) {
   if (id < 0 || id >= NumObjects(type)) {
     return nullptr;
   }
-  return (*object_lists[type])[id];
+  return (*object_lists_[type])[id];
 }
 
+
+
+template <class T>
+static mjsElement* GetNext(std::vector<T*>& list, mjsElement* child) {
+  if (!child) {
+    if (list.empty()) {
+      return nullptr;
+    }
+    return list[0]->spec.element;
+  }
+
+  // TODO: use id for direct indexing instead of a loop
+  for (unsigned int i = 0; i < list.size()-1; i++) {
+    if (list[i]->spec.element == child) {
+      return list[i+1]->spec.element;
+    }
+  }
+  return nullptr;
+}
+
+
+
+// next object of specified type
+mjsElement* mjCModel::NextObject(mjsElement* object, mjtObj type) {
+  if (type == mjOBJ_UNKNOWN) {
+    if (!object) {
+      throw mjCError(nullptr, "type must be specified if no element is given");
+    } else {
+      type = object->elemtype;
+    }
+  } else if (object && object->elemtype != type) {
+    throw mjCError(nullptr, "element is not of requested type");
+  }
+
+  switch (type) {
+    case mjOBJ_BODY:
+    case mjOBJ_SITE:
+    case mjOBJ_GEOM:
+    case mjOBJ_JOINT:
+    case mjOBJ_CAMERA:
+    case mjOBJ_LIGHT:
+    case mjOBJ_FRAME:
+      return bodies_[0]->NextChild(object, type, /*recursive=*/true);
+    case mjOBJ_ACTUATOR:
+      return GetNext(actuators_, object);
+    case mjOBJ_SENSOR:
+      return GetNext(sensors_, object);
+    case mjOBJ_FLEX:
+      return GetNext(flexes_, object);
+    case mjOBJ_PAIR:
+      return GetNext(pairs_, object);
+    case mjOBJ_EXCLUDE:
+      return GetNext(excludes_, object);
+    case mjOBJ_EQUALITY:
+      return GetNext(equalities_, object);
+    case mjOBJ_TENDON:
+      return GetNext(tendons_, object);
+    case mjOBJ_NUMERIC:
+      return GetNext(numerics_, object);
+    case mjOBJ_TEXT:
+      return GetNext(texts_, object);
+    case mjOBJ_TUPLE:
+      return GetNext(tuples_, object);
+    case mjOBJ_KEY:
+      return GetNext(keys_, object);
+    case mjOBJ_MESH:
+      return GetNext(meshes_, object);
+    case mjOBJ_HFIELD:
+      return GetNext(hfields_, object);
+    case mjOBJ_SKIN:
+      return GetNext(skins_, object);
+    case mjOBJ_TEXTURE:
+      return GetNext(textures_, object);
+    case mjOBJ_MATERIAL:
+      return GetNext(materials_, object);
+    default:
+      return nullptr;
+  }
+}
 
 
 //------------------------ API FOR ACCESS TO PRIVATE VARIABLES -------------------------------------
 
 // compiled flag
-bool mjCModel::IsCompiled(void) const {
+bool mjCModel::IsCompiled() const {
   return compiled;
 }
 
 
 
 // get reference of error object
-const mjCError& mjCModel::GetError(void) const {
+const mjCError& mjCModel::GetError() const {
   return errInfo;
 }
 
 
 
 // pointer to world body
-mjCBody* mjCModel::GetWorld(void) const {
-  return bodies[0];
+mjCBody* mjCModel::GetWorld() {
+  return bodies_[0];
 }
 
 
 
 // find default class name in array
-mjCDef* mjCModel::FindDef(string name) const {
-  for (int i=0; i<(int)defaults.size(); i++) {
-    if (defaults[i]->name==name) {
-      return defaults[i];
+mjCDef* mjCModel::FindDefault(string name) {
+  for (int i=0; i<(int)defaults_.size(); i++) {
+    if (defaults_[i]->name == name) {
+      return defaults_[i];
     }
   }
-
-  return 0;
+  return nullptr;
 }
 
 
 
 // add default class to array
-mjCDef* mjCModel::AddDef(string name, int parentid) {
+mjCDef* mjCModel::AddDefault(string name, mjCDef* parent) {
   // check for repeated name
-  int thisid = (int)defaults.size();
+  int thisid = (int)defaults_.size();
   for (int i=0; i<thisid; i++) {
-    if (defaults[i]->name==name) {
+    if (defaults_[i]->name==name) {
       return 0;
     }
   }
 
   // create new object
   mjCDef* def = new mjCDef;
-  defaults.push_back(def);
+  defaults_.push_back(def);
+  def->id = thisid;
 
   // initialize contents
-  if (parentid>=0 && parentid<thisid) {
-    defaults[parentid]->CopyFromSpec();
-    *def = *defaults[parentid];
-    defaults[parentid]->childid.push_back(thisid);
+  if (parent && parent->id<thisid) {
+    parent->CopyFromSpec();
+    def->CopyWithoutChildren(*parent);
+    parent->child.push_back(def);
   }
-  def->parentid = parentid;
+  def->parent = parent;
   def->name = name;
-  def->childid.clear();
+  def->child.clear();
+  def_map[name] = def;
 
   return def;
 }
@@ -722,27 +1022,78 @@ static T* findobject(std::string_view name, const vector<T*>& list, const mjKeyM
   if (id == ids.end()) {
     return nullptr;
   }
+  if (id->second > (int)list.size() - 1) {
+    throw mjCError(0, "object not found");
+  }
   return list[id->second];
 }
 
 // find object in global lists given string type and name
 mjCBase* mjCModel::FindObject(mjtObj type, string name) const {
-  if (!object_lists[type]) {
+  if (!object_lists_[type]) {
     return nullptr;
   }
-  return findobject(name, *object_lists[type], ids[type]);
+  return findobject(name, *object_lists_[type], ids[type]);
 }
 
 
 
 // find body by name
-mjCBody* mjCModel::FindBody(mjCBody* body, std::string name) const {
-  if (body->name == name) {
-    return body;
+mjCBase* mjCModel::FindTree(mjCBody* body, mjtObj type, std::string name) {
+  switch (type) {
+    case mjOBJ_BODY:
+      if (body->name == name) {
+        return body;
+      }
+      break;
+    case mjOBJ_SITE:
+      for (auto site : body->sites) {
+        if (site->name == name) {
+          return site;
+        }
+      }
+      break;
+    case mjOBJ_GEOM:
+      for (auto geom : body->geoms) {
+        if (geom->name == name) {
+          return geom;
+        }
+      }
+      break;
+    case mjOBJ_JOINT:
+      for (auto joint : body->joints) {
+        if (joint->name == name) {
+          return joint;
+        }
+      }
+      break;
+    case mjOBJ_CAMERA:
+      for (auto camera : body->cameras) {
+        if (camera->name == name) {
+          return camera;
+        }
+      }
+      break;
+    case mjOBJ_LIGHT:
+      for (auto light : body->lights) {
+        if (light->name == name) {
+          return light;
+        }
+      }
+      break;
+    case mjOBJ_FRAME:
+      for (auto frame : body->frames) {
+        if (frame->name == name) {
+          return frame;
+        }
+      }
+      break;
+    default:
+      return nullptr;
   }
 
   for (auto child : body->bodies) {
-    auto candidate = FindBody(child, name);
+    auto candidate = FindTree(child, type, name);
     if (candidate) {
       return candidate;
     }
@@ -753,45 +1104,14 @@ mjCBody* mjCModel::FindBody(mjCBody* body, std::string name) const {
 
 
 
-// find frame by name
-mjCFrame* mjCModel::FindFrame(mjCBody* body, std::string name) const{
-  for (auto frame : body->frames) {
-    if (frame->name == name) {
-      return frame;
+// find spec by name
+mjSpec* mjCModel::FindSpec(std::string name) const {
+  for (auto spec : specs_) {
+    if (mjs_getString(spec->modelname) == name) {
+      return spec;
     }
   }
-
-  for (auto body : body->bodies) {
-    auto candidate = FindFrame(body, name);
-    if (candidate) {
-      return candidate;
-    }
-  }
-
   return nullptr;
-}
-
-
-
-// detect null pose
-bool mjCModel::IsNullPose(const mjtNum* pos, const mjtNum* quat) const {
-  bool result = true;
-
-  // check position if given
-  if (pos) {
-    if (pos[0] || pos[1] || pos[2]) {
-      result = false;
-    }
-  }
-
-  // check orientation if given
-  if (quat) {
-    if (quat[0]!=1 || quat[1] || quat[2] || quat[3]) {
-      result = false;
-    }
-  }
-
-  return result;
 }
 
 
@@ -801,20 +1121,20 @@ bool mjCModel::IsNullPose(const mjtNum* pos, const mjtNum* quat) const {
 // make lists of objects in tree: bodies, geoms, joints, sites, cameras, lights
 void mjCModel::MakeLists(mjCBody* body) {
   // add this body if not world
-  if (body!=bodies[0]) {
-    bodies.push_back(body);
+  if (body != bodies_[0]) {
+    bodies_.push_back(body);
   }
 
   // add body's geoms, joints, sites, cameras, lights
-  for (int i=0; i<body->geoms.size(); i++) geoms.push_back(body->geoms[i]);
-  for (int i=0; i<body->joints.size(); i++) joints.push_back(body->joints[i]);
-  for (int i=0; i<body->sites.size(); i++) sites.push_back(body->sites[i]);
-  for (int i=0; i<body->cameras.size(); i++) cameras.push_back(body->cameras[i]);
-  for (int i=0; i<body->lights.size(); i++) lights.push_back(body->lights[i]);
-  for (int i=0; i<body->frames.size(); i++) frames.push_back(body->frames[i]);
+  for (mjCGeom *geom : body->geoms) geoms_.push_back(geom);
+  for (mjCJoint *joint : body->joints) joints_.push_back(joint);
+  for (mjCSite *site : body->sites) sites_.push_back(site);
+  for (mjCCamera *camera : body->cameras) cameras_.push_back(camera);
+  for (mjCLight *light : body->lights) lights_.push_back(light);
+  for (mjCFrame *frame : body->frames) frames_.push_back(frame);
 
   // recursive call to all child bodies
-  for (int i=0; i<body->bodies.size(); i++) MakeLists(body->bodies[i]);
+  for (mjCBody* body : body->bodies) MakeLists(body);
 }
 
 
@@ -830,13 +1150,11 @@ void mjCModel::DeleteMaterial(std::vector<T*>& list, std::string_view name) {
 
 
 
-// delete texture with given name or all textures if the name is omitted
+// delete all textures
 template <class T>
-static void DeleteTexture(std::vector<T*>& list, std::string_view name = "") {
+static void DeleteAllTextures(std::vector<T*>& list) {
   for (T* plist : list) {
-    if (name.empty() || plist->get_texture() == name) {
-      plist->del_texture();
-    }
+    plist->del_textures();
   }
 }
 
@@ -895,7 +1213,7 @@ template <>
 void mjCModel::Delete<mjCGeom>(std::vector<mjCGeom*>& elements,
                                const std::vector<bool>& discard) {
   // update bodies
-  for (mjCBody* body : bodies) {
+  for (mjCBody* body : bodies_) {
     body->geoms.erase(
         std::remove_if(body->geoms.begin(), body->geoms.end(),
                        [&discard](mjCGeom* geom) { return discard[geom->id]; }),
@@ -916,10 +1234,10 @@ void mjCModel::Delete<mjCMesh>(std::vector<mjCMesh*>& elements,
 
 template <>
 void mjCModel::DeleteAll<mjCMaterial>(std::vector<mjCMaterial*>& elements) {
-  DeleteMaterial(geoms);
-  DeleteMaterial(skins);
-  DeleteMaterial(sites);
-  DeleteMaterial(tendons);
+  DeleteMaterial(geoms_);
+  DeleteMaterial(skins_);
+  DeleteMaterial(sites_);
+  DeleteMaterial(tendons_);
   for (mjCMaterial* element : elements) {
     delete element;
   }
@@ -929,61 +1247,62 @@ void mjCModel::DeleteAll<mjCMaterial>(std::vector<mjCMaterial*>& elements) {
 
 template <>
 void mjCModel::DeleteAll<mjCTexture>(std::vector<mjCTexture*>& elements) {
-  DeleteTexture(materials);
+  DeleteAllTextures(materials_);
   for (mjCTexture* element : elements) {
     delete element;
   }
   elements.clear();
 }
 
+
 // set nuser fields
-void mjCModel::SetNuser(){
+void mjCModel::SetNuser() {
   if (nuser_body == -1) {
     nuser_body = 0;
-    for (int i=0; i<bodies.size(); i++) {
-      nuser_body = mjMAX(nuser_body, bodies[i]->spec_userdata_.size());
+    for (int i = 0; i < bodies_.size(); i++) {
+      nuser_body = mjMAX(nuser_body, bodies_[i]->spec_userdata_.size());
     }
   }
   if (nuser_jnt == -1) {
     nuser_jnt = 0;
-    for (int i=0; i<joints.size(); i++) {
-      nuser_jnt = mjMAX(nuser_jnt, joints[i]->spec_userdata_.size());
+    for (int i = 0; i < joints_.size(); i++) {
+      nuser_jnt = mjMAX(nuser_jnt, joints_[i]->spec_userdata_.size());
     }
   }
   if (nuser_geom == -1) {
     nuser_geom = 0;
-    for (int i=0; i<geoms.size(); i++) {
-      nuser_geom = mjMAX(nuser_geom, geoms[i]->spec_userdata_.size());
+    for (int i = 0; i < geoms_.size(); i++) {
+      nuser_geom = mjMAX(nuser_geom, geoms_[i]->spec_userdata_.size());
     }
   }
   if (nuser_site == -1) {
     nuser_site = 0;
-    for (int i=0; i<sites.size(); i++) {
-      nuser_site = mjMAX(nuser_site, sites[i]->spec_userdata_.size());
+    for (int i = 0; i < sites_.size(); i++) {
+      nuser_site = mjMAX(nuser_site, sites_[i]->spec_userdata_.size());
     }
   }
   if (nuser_cam == -1) {
     nuser_cam = 0;
-    for (int i=0; i<cameras.size(); i++) {
-      nuser_cam = mjMAX(nuser_cam, cameras[i]->spec_userdata_.size());
+    for (int i = 0; i < cameras_.size(); i++) {
+      nuser_cam = mjMAX(nuser_cam, cameras_[i]->spec_userdata_.size());
     }
   }
   if (nuser_tendon == -1) {
     nuser_tendon = 0;
-    for (int i=0; i<tendons.size(); i++) {
-      nuser_tendon = mjMAX(nuser_tendon, tendons[i]->spec_userdata_.size());
+    for (int i = 0; i < tendons_.size(); i++) {
+      nuser_tendon = mjMAX(nuser_tendon, tendons_[i]->spec_userdata_.size());
     }
   }
   if (nuser_actuator == -1) {
     nuser_actuator = 0;
-    for (int i=0; i<actuators.size(); i++) {
-      nuser_actuator = mjMAX(nuser_actuator, actuators[i]->spec_userdata_.size());
+    for (int i = 0; i < actuators_.size(); i++) {
+      nuser_actuator = mjMAX(nuser_actuator, actuators_[i]->spec_userdata_.size());
     }
   }
   if (nuser_sensor == -1) {
     nuser_sensor = 0;
-    for (int i=0; i<sensors.size(); i++) {
-      nuser_sensor = mjMAX(nuser_sensor, sensors[i]->spec_userdata_.size());
+    for (int i = 0; i < sensors_.size(); i++) {
+      nuser_sensor = mjMAX(nuser_sensor, sensors_[i]->spec_userdata_.size());
     }
   }
 }
@@ -991,8 +1310,8 @@ void mjCModel::SetNuser(){
 // index assets
 void mjCModel::IndexAssets(bool discard) {
   // assets referenced in geoms
-  for (int i=0; i<geoms.size(); i++) {
-    mjCGeom* geom = geoms[i];
+  for (int i=0; i<geoms_.size(); i++) {
+    mjCGeom* geom = geoms_[i];
 
     // find material by name
     if (!geom->get_material().empty()) {
@@ -1029,8 +1348,8 @@ void mjCModel::IndexAssets(bool discard) {
   }
 
   // assets referenced in skins
-  for (int i=0; i<skins.size(); i++) {
-    mjCSkin* skin = skins[i];
+  for (int i=0; i<skins_.size(); i++) {
+    mjCSkin* skin = skins_[i];
 
     // find material by name
     if (!skin->material_.empty()) {
@@ -1044,8 +1363,8 @@ void mjCModel::IndexAssets(bool discard) {
   }
 
   // materials referenced in sites
-  for (int i=0; i<sites.size(); i++) {
-    mjCSite* site = sites[i];
+  for (int i=0; i<sites_.size(); i++) {
+    mjCSite* site = sites_[i];
 
     // find material by name
     if (!site->material_.empty()) {
@@ -1059,8 +1378,8 @@ void mjCModel::IndexAssets(bool discard) {
   }
 
   // materials referenced in tendons
-  for (int i=0; i<tendons.size(); i++) {
-    mjCTendon* tendon = tendons[i];
+  for (int i=0; i<tendons_.size(); i++) {
+    mjCTendon* tendon = tendons_[i];
 
     // find material by name
     if (!tendon->material_.empty()) {
@@ -1074,32 +1393,34 @@ void mjCModel::IndexAssets(bool discard) {
   }
 
   // textures referenced in materials
-  for (int i=0; i<materials.size(); i++) {
-    mjCMaterial* material = materials[i];
+  for (int i=0; i<materials_.size(); i++) {
+    mjCMaterial* material = materials_[i];
 
-    // find texture by name
-    if (!material->texture_.empty()) {
-      mjCBase* texture = FindObject(mjOBJ_TEXTURE, material->texture_);
-      if (texture) {
-        material->texid = texture->id;
-      } else {
-        throw mjCError(material, "texture '%s' not found in material %d", material->texture_.c_str(), i);
+    // find textures by name
+    for (int j=0; j<mjNTEXROLE; j++) {
+      if (!material->textures_[j].empty()) {
+        mjCBase* texture = FindObject(mjOBJ_TEXTURE, material->textures_[j]);
+        if (texture) {
+          material->texid[j] = texture->id;
+        } else {
+          throw mjCError(material, "texture '%s' not found in material %d", material->textures_[j].c_str(), i);
+        }
       }
     }
   }
 
   // discard visual meshes and geoms
   if (discard) {
-    std::vector<bool> discard_mesh(meshes.size(), false);
-    std::vector<bool> discard_geom(geoms.size(), false);
+    std::vector<bool> discard_mesh(meshes_.size(), false);
+    std::vector<bool> discard_geom(geoms_.size(), false);
 
-    std::transform(meshes.begin(), meshes.end(), discard_mesh.begin(),
+    std::transform(meshes_.begin(), meshes_.end(), discard_mesh.begin(),
                   [](const mjCMesh* mesh) { return mesh->IsVisual(); });
-    std::transform(geoms.begin(), geoms.end(), discard_geom.begin(),
+    std::transform(geoms_.begin(), geoms_.end(), discard_geom.begin(),
                   [](const mjCGeom* geom) { return geom->IsVisual(); });
 
-    Delete(meshes, discard_mesh);
-    Delete(geoms, discard_geom);
+    Delete(meshes_, discard_mesh);
+    Delete(geoms_, discard_geom);
   }
 }
 
@@ -1115,7 +1436,7 @@ void mjCModel::SetDefaultNames(std::vector<T*>& assets) {
   for (int i=0; i<assets.size(); i++) {
     assets[i]->CopyFromSpec();
     if (assets[i]->name.empty()) {
-      stripped = mjuu_strippath(assets[i]->get_file());
+      stripped = mjuu_strippath(assets[i]->File());
       assets[i]->name = mjuu_stripext(stripped);
       names[assets[i]->name].push_back(i);
     }
@@ -1136,46 +1457,42 @@ void mjCModel::SetDefaultNames(std::vector<T*>& assets) {
 // throw error if a name is missing
 void mjCModel::CheckEmptyNames(void) {
   // meshes
-  for (int i=0; i<meshes.size(); i++) {
-    if (meshes[i]->name.empty()) {
-      throw mjCError(meshes[i], "empty name in mesh");
+  for (int i=0; i<meshes_.size(); i++) {
+    if (meshes_[i]->name.empty()) {
+      throw mjCError(meshes_[i], "empty name in mesh");
     }
   }
 
   // hfields
-  for (int i=0; i<hfields.size(); i++) {
-    if (hfields[i]->name.empty()) {
-      throw mjCError(hfields[i], "empty name in height field");
+  for (int i=0; i<hfields_.size(); i++) {
+    if (hfields_[i]->name.empty()) {
+      throw mjCError(hfields_[i], "empty name in height field");
     }
   }
 
   // textures
-  for (int i=0; i<textures.size(); i++) {
-    if (textures[i]->name.empty() && textures[i]->type!=mjTEXTURE_SKYBOX) {
-      throw mjCError(textures[i], "empty name in texture");
+  for (int i=0; i < textures_.size(); i++) {
+    if (textures_[i]->name.empty() && textures_[i]->type!=mjTEXTURE_SKYBOX) {
+      throw mjCError(textures_[i], "empty name in texture");
     }
   }
 
   // materials
-  for (int i=0; i<materials.size(); i++) {
-    if (materials[i]->name.empty()) {
-      throw mjCError(materials[i], "empty name in material");
+  for (int i=0; i < materials_.size(); i++) {
+    if (materials_[i]->name.empty()) {
+      throw mjCError(materials_[i], "empty name in material");
     }
   }
 }
 
 
 
-// number of position and velocity coordinates for each joint type
-const int nPOS[4] = {7, 4, 1, 1};
-const int nVEL[4] = {6, 3, 1, 1};
-
 template <typename T>
 static size_t getpathslength(std::vector<T> list) {
   size_t result = 0;
   for (const auto& element : list) {
-    if (!element->get_file().empty()) {
-      result += element->get_file().length() + 1;
+    if (!element->File().empty()) {
+      result += element->File().length() + 1;
     }
   }
 
@@ -1183,150 +1500,150 @@ static size_t getpathslength(std::vector<T> list) {
 }
 
 // set array sizes
-void mjCModel::SetSizes(void) {
+void mjCModel::SetSizes() {
   // set from object list sizes
-  nbody = (int)bodies.size();
-  njnt = (int)joints.size();
-  ngeom = (int)geoms.size();
-  nsite = (int)sites.size();
-  ncam = (int)cameras.size();
-  nlight = (int)lights.size();
-  nflex = (int)flexes.size();
-  nmesh = (int)meshes.size();
-  nskin = (int)skins.size();
-  nhfield = (int)hfields.size();
-  ntex = (int)textures.size();
-  nmat = (int)materials.size();
-  npair = (int)pairs.size();
-  nexclude = (int)excludes.size();
-  neq = (int)equalities.size();
-  ntendon = (int)tendons.size();
-  nsensor = (int)sensors.size();
-  nnumeric = (int)numerics.size();
-  ntext = (int)texts.size();
-  ntuple = (int)tuples.size();
-  nkey = (int)keys.size();
-  nplugin = (int)plugins.size();
+  nbody = (int)bodies_.size();
+  njnt = (int)joints_.size();
+  ngeom = (int)geoms_.size();
+  nsite = (int)sites_.size();
+  ncam = (int)cameras_.size();
+  nlight = (int)lights_.size();
+  nflex = (int)flexes_.size();
+  nmesh = (int)meshes_.size();
+  nskin = (int)skins_.size();
+  nhfield = (int)hfields_.size();
+  ntex = (int)textures_.size();
+  nmat = (int)materials_.size();
+  npair = (int)pairs_.size();
+  nexclude = (int)excludes_.size();
+  neq = (int)equalities_.size();
+  ntendon = (int)tendons_.size();
+  nsensor = (int)sensors_.size();
+  nnumeric = (int)numerics_.size();
+  ntext = (int)texts_.size();
+  ntuple = (int)tuples_.size();
+  nkey = (int)keys_.size();
+  nplugin = (int)plugins_.size();
 
   // nq, nv
   for (int i=0; i<njnt; i++) {
-    nq += nPOS[joints[i]->type];
-    nv += nVEL[joints[i]->type];
+    nq += joints_[i]->nq();
+    nv += joints_[i]->nv();
   }
 
   // nu, na
-  for (int i=0; i<actuators.size(); i++) {
+  for (int i=0; i<actuators_.size(); i++) {
     nu++;
-    na += actuators[i]->actdim + actuators[i]->plugin_actdim;
+    na += actuators_[i]->actdim;
   }
 
   // nbvh, nbvhstatic, nbvhdynamic
   for (int i=0; i<nbody; i++) {
-    nbvhstatic += bodies[i]->tree.nbvh;
+    nbvhstatic += bodies_[i]->tree.Nbvh();
   }
   for (int i=0; i<nmesh; i++) {
-    nbvhstatic += meshes[i]->tree().nbvh;
+    nbvhstatic += meshes_[i]->tree().Nbvh();
   }
   for (int i=0; i<nflex; i++) {
-    nbvhdynamic += flexes[i]->tree.nbvh;
+    nbvhdynamic += flexes_[i]->tree.Nbvh();
   }
   nbvh = nbvhstatic + nbvhdynamic;
 
   // flex counts
   for (int i=0; i<nflex; i++) {
-    nflexvert += flexes[i]->nvert;
-    nflexedge += flexes[i]->nedge;
-    nflexelem += flexes[i]->nelem;
-    nflexelemdata += flexes[i]->nelem * (flexes[i]->dim + 1);
-    nflexshelldata += (int)flexes[i]->shell.size();
-    nflexevpair += (int)flexes[i]->evpair.size()/2;
+    nflexvert += flexes_[i]->nvert;
+    nflexedge += flexes_[i]->nedge;
+    nflexelem += flexes_[i]->nelem;
+    nflexelemdata += flexes_[i]->nelem * (flexes_[i]->dim + 1);
+    nflexshelldata += (int)flexes_[i]->shell.size();
+    nflexevpair += (int)flexes_[i]->evpair.size()/2;
   }
 
   // mesh counts
   for (int i=0; i<nmesh; i++) {
-    nmeshvert += meshes[i]->nvert();
-    nmeshnormal += meshes[i]->nnormal();
-    nmeshface += meshes[i]->nface();
-    nmeshtexcoord += (meshes[i]->HasTexcoord() ? meshes[i]->ntexcoord() : 0);
-    nmeshgraph += meshes[i]->szgraph();
+    nmeshvert += meshes_[i]->nvert();
+    nmeshnormal += meshes_[i]->nnormal();
+    nmeshface += meshes_[i]->nface();
+    nmeshtexcoord += (meshes_[i]->HasTexcoord() ? meshes_[i]->ntexcoord() : 0);
+    nmeshgraph += meshes_[i]->szgraph();
   }
 
   // skin counts
   for (int i=0; i<nskin; i++) {
-    nskinvert += skins[i]->get_vert().size()/3;
-    nskintexvert += skins[i]->get_texcoord().size()/2;
-    nskinface += skins[i]->get_face().size()/3;
-    nskinbone += skins[i]->bodyid.size();
-    for (int j=0; j<skins[i]->bodyid.size(); j++) {
-      nskinbonevert += skins[i]->get_vertid()[j].size();
+    nskinvert += skins_[i]->get_vert().size()/3;
+    nskintexvert += skins_[i]->get_texcoord().size()/2;
+    nskinface += skins_[i]->get_face().size()/3;
+    nskinbone += skins_[i]->bodyid.size();
+    for (int j=0; j<skins_[i]->bodyid.size(); j++) {
+      nskinbonevert += skins_[i]->get_vertid()[j].size();
     }
   }
 
   // nhfielddata
-  for (int i=0; i<nhfield; i++) nhfielddata += hfields[i]->nrow * hfields[i]->ncol;
+  for (int i=0; i<nhfield; i++) nhfielddata += hfields_[i]->nrow * hfields_[i]->ncol;
 
   // ntexdata
-  for (int i=0; i<ntex; i++) ntexdata += 3 * textures[i]->width * textures[i]->height;
+  for (int i=0; i<ntex; i++) ntexdata += textures_[i]->nchannel * textures_[i]->width * textures_[i]->height;
 
   // nwrap
-  for (int i=0; i<ntendon; i++) nwrap += (int)tendons[i]->path.size();
+  for (int i=0; i<ntendon; i++) nwrap += (int)tendons_[i]->path.size();
 
   // nsensordata
-  for (int i=0; i<nsensor; i++) nsensordata += sensors[i]->dim;
+  for (int i=0; i<nsensor; i++) nsensordata += sensors_[i]->dim;
 
   // nnumericdata
-  for (int i=0; i<nnumeric; i++) nnumericdata += numerics[i]->size;
+  for (int i=0; i<nnumeric; i++) nnumericdata += numerics_[i]->size;
 
   // ntextdata
-  for (int i=0; i<ntext; i++) ntextdata += (int)texts[i]->data_.size() + 1;
+  for (int i=0; i<ntext; i++) ntextdata += (int)texts_[i]->data_.size() + 1;
 
   // ntupledata
-  for (int i=0; i<ntuple; i++) ntupledata += (int)tuples[i]->objtype_.size();
+  for (int i=0; i<ntuple; i++) ntupledata += (int)tuples_[i]->objtype_.size();
 
   // npluginattr
-  for (int i=0; i<nplugin; i++) npluginattr += (int)plugins[i]->flattened_attributes.size();
+  for (int i=0; i<nplugin; i++) npluginattr += (int)plugins_[i]->flattened_attributes.size();
 
   // nnames
   nnames = (int)modelname_.size() + 1;
-  for (int i=0; i<nbody; i++)    nnames += (int)bodies[i]->name.length() + 1;
-  for (int i=0; i<njnt; i++)     nnames += (int)joints[i]->name.length() + 1;
-  for (int i=0; i<ngeom; i++)    nnames += (int)geoms[i]->name.length() + 1;
-  for (int i=0; i<nsite; i++)    nnames += (int)sites[i]->name.length() + 1;
-  for (int i=0; i<ncam; i++)     nnames += (int)cameras[i]->name.length() + 1;
-  for (int i=0; i<nlight; i++)   nnames += (int)lights[i]->name.length() + 1;
-  for (int i=0; i<nflex; i++)    nnames += (int)flexes[i]->name.length() + 1;
-  for (int i=0; i<nmesh; i++)    nnames += (int)meshes[i]->name.length() + 1;
-  for (int i=0; i<nskin; i++)    nnames += (int)skins[i]->name.length() + 1;
-  for (int i=0; i<nhfield; i++)  nnames += (int)hfields[i]->name.length() + 1;
-  for (int i=0; i<ntex; i++)     nnames += (int)textures[i]->name.length() + 1;
-  for (int i=0; i<nmat; i++)     nnames += (int)materials[i]->name.length() + 1;
-  for (int i=0; i<npair; i++)    nnames += (int)pairs[i]->name.length() + 1;
-  for (int i=0; i<nexclude; i++) nnames += (int)excludes[i]->name.length() + 1;
-  for (int i=0; i<neq; i++)      nnames += (int)equalities[i]->name.length() + 1;
-  for (int i=0; i<ntendon; i++)  nnames += (int)tendons[i]->name.length() + 1;
-  for (int i=0; i<nu; i++)       nnames += (int)actuators[i]->name.length() + 1;
-  for (int i=0; i<nsensor; i++)  nnames += (int)sensors[i]->name.length() + 1;
-  for (int i=0; i<nnumeric; i++) nnames += (int)numerics[i]->name.length() + 1;
-  for (int i=0; i<ntext; i++)    nnames += (int)texts[i]->name.length() + 1;
-  for (int i=0; i<ntuple; i++)   nnames += (int)tuples[i]->name.length() + 1;
-  for (int i=0; i<nkey; i++)     nnames += (int)keys[i]->name.length() + 1;
-  for (int i=0; i<nplugin; i++)  nnames += (int)plugins[i]->name.length() + 1;
+  for (int i=0; i<nbody; i++)    nnames += (int)bodies_[i]->name.length() + 1;
+  for (int i=0; i<njnt; i++)     nnames += (int)joints_[i]->name.length() + 1;
+  for (int i=0; i<ngeom; i++)    nnames += (int)geoms_[i]->name.length() + 1;
+  for (int i=0; i<nsite; i++)    nnames += (int)sites_[i]->name.length() + 1;
+  for (int i=0; i<ncam; i++)     nnames += (int)cameras_[i]->name.length() + 1;
+  for (int i=0; i<nlight; i++)   nnames += (int)lights_[i]->name.length() + 1;
+  for (int i=0; i<nflex; i++)    nnames += (int)flexes_[i]->name.length() + 1;
+  for (int i=0; i<nmesh; i++)    nnames += (int)meshes_[i]->name.length() + 1;
+  for (int i=0; i<nskin; i++)    nnames += (int)skins_[i]->name.length() + 1;
+  for (int i=0; i<nhfield; i++)  nnames += (int)hfields_[i]->name.length() + 1;
+  for (int i=0; i<ntex; i++)     nnames += (int)textures_[i]->name.length() + 1;
+  for (int i=0; i<nmat; i++)     nnames += (int)materials_[i]->name.length() + 1;
+  for (int i=0; i<npair; i++)    nnames += (int)pairs_[i]->name.length() + 1;
+  for (int i=0; i<nexclude; i++) nnames += (int)excludes_[i]->name.length() + 1;
+  for (int i=0; i<neq; i++)      nnames += (int)equalities_[i]->name.length() + 1;
+  for (int i=0; i<ntendon; i++)  nnames += (int)tendons_[i]->name.length() + 1;
+  for (int i=0; i<nu; i++)       nnames += (int)actuators_[i]->name.length() + 1;
+  for (int i=0; i<nsensor; i++)  nnames += (int)sensors_[i]->name.length() + 1;
+  for (int i=0; i<nnumeric; i++) nnames += (int)numerics_[i]->name.length() + 1;
+  for (int i=0; i<ntext; i++)    nnames += (int)texts_[i]->name.length() + 1;
+  for (int i=0; i<ntuple; i++)   nnames += (int)tuples_[i]->name.length() + 1;
+  for (int i=0; i<nkey; i++)     nnames += (int)keys_[i]->name.length() + 1;
+  for (int i=0; i<nplugin; i++)  nnames += (int)plugins_[i]->name.length() + 1;
 
   // npaths
   npaths = 0;
-  npaths += getpathslength(hfields);
-  npaths += getpathslength(meshes);
-  npaths += getpathslength(skins);
-  npaths += getpathslength(textures);
+  npaths += getpathslength(hfields_);
+  npaths += getpathslength(meshes_);
+  npaths += getpathslength(skins_);
+  npaths += getpathslength(textures_);
   if (npaths == 0) {
     npaths = 1;
   }
 
   // nemax
   for (int i=0; i<neq; i++) {
-    if (equalities[i]->type==mjEQ_CONNECT) {
+    if (equalities_[i]->type==mjEQ_CONNECT) {
       nemax += 3;
-    } else if (equalities[i]->type==mjEQ_WELD) {
+    } else if (equalities_[i]->type==mjEQ_WELD) {
       nemax += 7;
     } else {
       nemax += 1;
@@ -1342,11 +1659,11 @@ void mjCModel::AutoSpringDamper(mjModel* m) {
   for (int n=0; n<m->njnt; n++) {
     // get joint dof address and number of dimensions
     int adr = m->jnt_dofadr[n];
-    int ndim = nVEL[m->jnt_type[n]];
+    int ndim = mjCJoint::nv((mjtJoint)m->jnt_type[n]);
 
     // get timeconst and dampratio from joint specificatin
-    mjtNum timeconst = (mjtNum)joints[n]->springdamper[0];
-    mjtNum dampratio = (mjtNum)joints[n]->springdamper[1];
+    mjtNum timeconst = (mjtNum)joints_[n]->springdamper[0];
+    mjtNum dampratio = (mjtNum)joints_[n]->springdamper[1];
 
     // skip joint if either parameter is non-positive
     if (timeconst<=0 || dampratio<=0) {
@@ -1358,11 +1675,11 @@ void mjCModel::AutoSpringDamper(mjModel* m) {
     for (int i=0; i<ndim; i++) {
       inertia += m->dof_invweight0[adr+i];
     }
-    inertia = ((mjtNum)ndim) / mju_max(mjMINVAL, inertia);
+    inertia = ((mjtNum)ndim) / std::max(mjMINVAL, inertia);
 
     // compute stiffness and damping (same as solref computation)
-    mjtNum stiffness = inertia / mju_max(mjMINVAL, timeconst*timeconst*dampratio*dampratio);
-    mjtNum damping = 2 * inertia / mju_max(mjMINVAL, timeconst);
+    mjtNum stiffness = inertia / std::max(mjMINVAL, timeconst*timeconst*dampratio*dampratio);
+    mjtNum damping = 2 * inertia / std::max(mjMINVAL, timeconst);
 
     // assign
     m->jnt_stiffness[n] = stiffness;
@@ -1394,12 +1711,12 @@ void* LRfunc(void* arg) {
   for (int i=larg->start; i<larg->start+larg->num; i++) {
     if (i<larg->m->nu) {
       if (!mj_setLengthRange(larg->m, larg->data, i, larg->LRopt, larg->error, larg->error_sz)) {
-        return NULL;
+        return nullptr;
       }
     }
   }
 
-  return NULL;
+  return nullptr;
 }
 
 
@@ -1413,8 +1730,9 @@ void mjCModel::LengthRange(mjModel* m, mjData* data) {
     m->opt.timestep = LRopt.timestep;
   }
 
-  // number of threads available, max 16
-  const int nthread = mjMIN(16, getnumproc()/2);
+  // number of threads available
+  int hardware_threads = std::thread::hardware_concurrency();
+  const int nthread = mjMAX(1, mjMIN(kMaxCompilerThreads, hardware_threads/2));
 
   // count actuators that need computation
   int cnt = 0;
@@ -1453,8 +1771,8 @@ void mjCModel::LengthRange(mjModel* m, mjData* data) {
   // multiple threads
   else {
     // allocate mjData for each thread
-    char err[16][200];
-    mjData* pdata[16] = {data};
+    char err[kMaxCompilerThreads][200];
+    mjData* pdata[kMaxCompilerThreads] = {data};
     for (int i=1; i<nthread; i++) {
       pdata[i] = mj_makeData(m);
     }
@@ -1466,39 +1784,23 @@ void mjCModel::LengthRange(mjModel* m, mjData* data) {
     }
 
     // prepare thread function arguments, clear errors
-    LRThreadArg arg[16];
+    LRThreadArg arg[kMaxCompilerThreads];
     for (int i=0; i<nthread; i++) {
       LRThreadArg temp = {m, pdata[i], i*num, num, &LRopt, err[i], 200};
       arg[i] = temp;
       err[i][0] = 0;
     }
 
-    // use std::thread
-#if defined(_WIN32) || defined(__APPLE__)
     // launch threads
-    thread th[16];
+    std::thread th[kMaxCompilerThreads];
     for (int i=0; i<nthread; i++) {
-      th[i] = thread(LRfunc, arg+i);
+      th[i] = std::thread(LRfunc, arg+i);
     }
 
     // wait for threads to finish
     for (int i=0; i<nthread; i++) {
       th[i].join();
     }
-
-    // use pthread
-#else
-    // launch threads
-    pthread_t th[16];
-    for (int i=0; i<nthread; i++) {
-      pthread_create(th+i, NULL, LRfunc, arg+i);
-    }
-
-    // wait for threads to finish
-    for (int i=0; i<nthread; i++) {
-      pthread_join(th[i], NULL);
-    }
-#endif
 
     // free mjData allocated here
     for (int i=1; i<nthread; i++) {
@@ -1572,73 +1874,73 @@ void mjCModel::CopyNames(mjModel* m) {
   memset(m->names_map, -1, sizeof(int) * m->nnames_map);
 
   // process all lists
-  adr = namelist(bodies, adr, m->name_bodyadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*bodies.size();
+  adr = namelist(bodies_, adr, m->name_bodyadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*bodies_.size();
 
-  adr = namelist(joints, adr, m->name_jntadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*joints.size();
+  adr = namelist(joints_, adr, m->name_jntadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*joints_.size();
 
-  adr = namelist(geoms, adr, m->name_geomadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*geoms.size();
+  adr = namelist(geoms_, adr, m->name_geomadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*geoms_.size();
 
-  adr = namelist(sites, adr, m->name_siteadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*sites.size();
+  adr = namelist(sites_, adr, m->name_siteadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*sites_.size();
 
-  adr = namelist(cameras, adr, m->name_camadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*cameras.size();
+  adr = namelist(cameras_, adr, m->name_camadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*cameras_.size();
 
-  adr = namelist(lights, adr, m->name_lightadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*lights.size();
+  adr = namelist(lights_, adr, m->name_lightadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*lights_.size();
 
-  adr = namelist(flexes, adr, m->name_flexadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*flexes.size();
+  adr = namelist(flexes_, adr, m->name_flexadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*flexes_.size();
 
-  adr = namelist(meshes, adr, m->name_meshadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*meshes.size();
+  adr = namelist(meshes_, adr, m->name_meshadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*meshes_.size();
 
-  adr = namelist(skins, adr, m->name_skinadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*skins.size();
+  adr = namelist(skins_, adr, m->name_skinadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*skins_.size();
 
-  adr = namelist(hfields, adr, m->name_hfieldadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*hfields.size();
+  adr = namelist(hfields_, adr, m->name_hfieldadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*hfields_.size();
 
-  adr = namelist(textures, adr, m->name_texadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*textures.size();
+  adr = namelist(textures_, adr, m->name_texadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*textures_.size();
 
-  adr = namelist(materials, adr, m->name_matadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*materials.size();
+  adr = namelist(materials_, adr, m->name_matadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*materials_.size();
 
-  adr = namelist(pairs, adr, m->name_pairadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*pairs.size();
+  adr = namelist(pairs_, adr, m->name_pairadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*pairs_.size();
 
-  adr = namelist(excludes, adr, m->name_excludeadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*excludes.size();
+  adr = namelist(excludes_, adr, m->name_excludeadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*excludes_.size();
 
-  adr = namelist(equalities, adr, m->name_eqadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*equalities.size();
+  adr = namelist(equalities_, adr, m->name_eqadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*equalities_.size();
 
-  adr = namelist(tendons, adr, m->name_tendonadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*tendons.size();
+  adr = namelist(tendons_, adr, m->name_tendonadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*tendons_.size();
 
-  adr = namelist(actuators, adr, m->name_actuatoradr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*actuators.size();
+  adr = namelist(actuators_, adr, m->name_actuatoradr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*actuators_.size();
 
-  adr = namelist(sensors, adr, m->name_sensoradr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*sensors.size();
+  adr = namelist(sensors_, adr, m->name_sensoradr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*sensors_.size();
 
-  adr = namelist(numerics, adr, m->name_numericadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*numerics.size();
+  adr = namelist(numerics_, adr, m->name_numericadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*numerics_.size();
 
-  adr = namelist(texts, adr, m->name_textadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*texts.size();
+  adr = namelist(texts_, adr, m->name_textadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*texts_.size();
 
-  adr = namelist(tuples, adr, m->name_tupleadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*tuples.size();
+  adr = namelist(tuples_, adr, m->name_tupleadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*tuples_.size();
 
-  adr = namelist(keys, adr, m->name_keyadr, m->names, map_adr);
-  map_adr += mjLOAD_MULTIPLE*keys.size();
+  adr = namelist(keys_, adr, m->name_keyadr, m->names, map_adr);
+  map_adr += mjLOAD_MULTIPLE*keys_.size();
 
-  adr = namelist(plugins, adr, m->name_pluginadr, m->names, map_adr);
+  adr = namelist(plugins_, adr, m->name_pluginadr, m->names, map_adr);
 
   // check size, SHOULD NOT OCCUR
   if (adr != nnames) {
@@ -1651,10 +1953,10 @@ template <class T>
 static int pathlist(vector<T*>& list, int adr, int* path_adr, char* paths) {
   for (unsigned int i = 0; i < list.size(); ++i) {
     path_adr[i] = -1;
-    if (!list[i] || list[i]->get_file().empty()) {
+    if (!list[i] || list[i]->File().empty()) {
       continue;
     }
-    adr = addtolist(list[i]->get_file(), adr, &path_adr[i], paths);
+    adr = addtolist(list[i]->File(), adr, &path_adr[i], paths);
   }
 
   return adr;
@@ -1664,10 +1966,10 @@ void mjCModel::CopyPaths(mjModel* m) {
   // start with 0 address, unlike m->names m->paths might be empty
   size_t adr = 0;
   m->paths[0] = 0;
-  adr = pathlist(hfields, adr, m->hfield_pathadr, m->paths);
-  adr = pathlist(meshes, adr, m->mesh_pathadr, m->paths);
-  adr = pathlist(skins, adr, m->skin_pathadr, m->paths);
-  adr = pathlist(textures, adr, m->tex_pathadr, m->paths);
+  adr = pathlist(hfields_, adr, m->hfield_pathadr, m->paths);
+  adr = pathlist(meshes_, adr, m->mesh_pathadr, m->paths);
+  adr = pathlist(skins_, adr, m->skin_pathadr, m->paths);
+  adr = pathlist(textures_, adr, m->tex_pathadr, m->paths);
 }
 
 
@@ -1682,8 +1984,8 @@ void mjCModel::CopyTree(mjModel* m) {
   // main loop over bodies
   for (int i=0; i<nbody; i++) {
     // get body and parent pointers
-    mjCBody* pb = bodies[i];
-    mjCBody* par = bodies[pb->parentid];
+    mjCBody* pb = bodies_[i];
+    mjCBody* par = bodies_[pb->parentid];
 
     // set body fields
     m->body_parentid[i] = pb->parentid;
@@ -1695,31 +1997,31 @@ void mjCModel::CopyTree(mjModel* m) {
     m->body_dofadr[i] = (pb->dofnum ? dofadr : -1);
     m->body_geomnum[i] = (int)pb->geoms.size();
     m->body_geomadr[i] = (!pb->geoms.empty() ? pb->geoms[0]->id : -1);
-    copyvec(m->body_pos+3*i, pb->pos, 3);
-    copyvec(m->body_quat+4*i, pb->quat, 4);
-    copyvec(m->body_ipos+3*i, pb->ipos, 3);
-    copyvec(m->body_iquat+4*i, pb->iquat, 4);
+    mjuu_copyvec(m->body_pos+3*i, pb->pos, 3);
+    mjuu_copyvec(m->body_quat+4*i, pb->quat, 4);
+    mjuu_copyvec(m->body_ipos+3*i, pb->ipos, 3);
+    mjuu_copyvec(m->body_iquat+4*i, pb->iquat, 4);
     m->body_mass[i] = (mjtNum)pb->mass;
-    copyvec(m->body_inertia+3*i, pb->inertia, 3);
+    mjuu_copyvec(m->body_inertia+3*i, pb->inertia, 3);
     m->body_gravcomp[i] = pb->gravcomp;
-    copyvec(m->body_user+nuser_body*i, pb->get_userdata().data(), nuser_body);
+    mjuu_copyvec(m->body_user+nuser_body*i, pb->get_userdata().data(), nuser_body);
 
     m->body_contype[i] = pb->contype;
     m->body_conaffinity[i] = pb->conaffinity;
     m->body_margin[i] = (mjtNum)pb->margin;
 
     // bounding volume hierarchy
-    m->body_bvhadr[i] = pb->tree.nbvh ? bvh_adr : -1;
-    m->body_bvhnum[i] = pb->tree.nbvh;
-    if (pb->tree.nbvh) {
-      memcpy(m->bvh_aabb + 6*bvh_adr, pb->tree.bvh.data(), 6*pb->tree.nbvh*sizeof(mjtNum));
-      memcpy(m->bvh_child + 2*bvh_adr, pb->tree.child.data(), 2*pb->tree.nbvh*sizeof(int));
-      memcpy(m->bvh_depth + bvh_adr, pb->tree.level.data(), pb->tree.nbvh*sizeof(int));
-      for (int i=0; i<pb->tree.nbvh; i++) {
-        m->bvh_nodeid[i + bvh_adr] = pb->tree.nodeid[i] ? *(pb->tree.nodeid[i]) : -1;
+    m->body_bvhadr[i] = pb->tree.Nbvh() ? bvh_adr : -1;
+    m->body_bvhnum[i] = pb->tree.Nbvh();
+    if (pb->tree.Nbvh()) {
+      memcpy(m->bvh_aabb + 6*bvh_adr, pb->tree.Bvh().data(), 6*pb->tree.Nbvh()*sizeof(mjtNum));
+      memcpy(m->bvh_child + 2*bvh_adr, pb->tree.Child().data(), 2*pb->tree.Nbvh()*sizeof(int));
+      memcpy(m->bvh_depth + bvh_adr, pb->tree.Level().data(), pb->tree.Nbvh()*sizeof(int));
+      for (int i=0; i<pb->tree.Nbvh(); i++) {
+        m->bvh_nodeid[i + bvh_adr] = pb->tree.Nodeid(i) ? *(pb->tree.Nodeid(i)) : -1;
       }
     }
-    bvh_adr += pb->tree.nbvh;
+    bvh_adr += pb->tree.Nbvh();
 
     // count free joints
     int cntfree = 0;
@@ -1746,16 +2048,25 @@ void mjCModel::CopyTree(mjModel* m) {
     pb->lastdof = par->lastdof;
 
     // set sameframe
-    m->body_sameframe[i] = IsNullPose(m->body_ipos+3*i, m->body_iquat+4*i);
+    mjtSameFrame sameframe;
+    mjtNum* nullnum = static_cast<mjtNum*>(nullptr);
+    if (IsNullPose(m->body_ipos+3*i, m->body_iquat+4*i)) {
+      sameframe = mjSAMEFRAME_BODY;
+    } else if (IsNullPose(nullnum, m->body_iquat+4*i)) {
+      sameframe = mjSAMEFRAME_BODYROT;
+    } else {
+      sameframe = mjSAMEFRAME_NONE;
+    }
+    m->body_sameframe[i] = sameframe;
 
     // init simple: sameframe, and (self-root, or parent is fixed child of world)
-    int j = m->body_parentid[i];
-    m->body_simple[i] = (m->body_sameframe[i] &&
+    int parentid = m->body_parentid[i];
+    m->body_simple[i] = (sameframe == mjSAMEFRAME_BODY &&
                          (m->body_rootid[i]==i ||
-                          (m->body_parentid[j]==0 &&
-                           m->body_dofnum[j]==0)));
+                          (m->body_parentid[parentid]==0 &&
+                           m->body_dofnum[parentid]==0)));
 
-    // parent is not simple (unless world)
+    // a parent body is never simple (unless world)
     if (m->body_parentid[i]>0) {
       m->body_simple[m->body_parentid[i]] = 0;
     }
@@ -1768,6 +2079,8 @@ void mjCModel::CopyTree(mjModel* m) {
       int jid = pj->id;
 
       // set joint fields
+      pj->qposadr_ = qposadr;
+      pj->dofadr_ = dofadr;
       m->jnt_type[jid] = pj->type;
       m->jnt_group[jid] = pj->group;
       m->jnt_limited[jid] = (mjtByte)pj->is_limited();
@@ -1776,23 +2089,22 @@ void mjCModel::CopyTree(mjModel* m) {
       m->jnt_qposadr[jid] = qposadr;
       m->jnt_dofadr[jid] = dofadr;
       m->jnt_bodyid[jid] = pj->body->id;
-      copyvec(m->jnt_pos+3*jid, pj->pos, 3);
-      copyvec(m->jnt_axis+3*jid, pj->axis, 3);
+      mjuu_copyvec(m->jnt_pos+3*jid, pj->pos, 3);
+      mjuu_copyvec(m->jnt_axis+3*jid, pj->axis, 3);
       m->jnt_stiffness[jid] = (mjtNum)pj->stiffness;
-      copyvec(m->jnt_range+2*jid, pj->range, 2);
-      copyvec(m->jnt_actfrcrange+2*jid, pj->actfrcrange, 2);
-      copyvec(m->jnt_solref+mjNREF*jid, pj->solref_limit, mjNREF);
-      copyvec(m->jnt_solimp+mjNIMP*jid, pj->solimp_limit, mjNIMP);
+      mjuu_copyvec(m->jnt_range+2*jid, pj->range, 2);
+      mjuu_copyvec(m->jnt_actfrcrange+2*jid, pj->actfrcrange, 2);
+      mjuu_copyvec(m->jnt_solref+mjNREF*jid, pj->solref_limit, mjNREF);
+      mjuu_copyvec(m->jnt_solimp+mjNIMP*jid, pj->solimp_limit, mjNIMP);
       m->jnt_margin[jid] = (mjtNum)pj->margin;
-      copyvec(m->jnt_user+nuser_jnt*jid, pj->get_userdata().data(), nuser_jnt);
+      mjuu_copyvec(m->jnt_user+nuser_jnt*jid, pj->get_userdata().data(), nuser_jnt);
 
       // not simple if: rotation already found, or pos not zero, or mis-aligned axis
-      if (rotfound ||
-          !IsNullPose(m->jnt_pos+3*jid, NULL) ||
-          ((pj->type==mjJNT_HINGE || pj->type==mjJNT_SLIDE) &&
-           ((mju_abs(pj->axis[0])>mjEPS) +
-            (mju_abs(pj->axis[1])>mjEPS) +
-            (mju_abs(pj->axis[2])>mjEPS)) > 1)) {
+      bool axis_aligned = ((std::abs(pj->axis[0]) > mjEPS) +
+                           (std::abs(pj->axis[1]) > mjEPS) +
+                           (std::abs(pj->axis[2]) > mjEPS)) == 1;
+      if (rotfound || !IsNullPose(m->jnt_pos+3*jid, nullnum) ||
+          ((pj->type == mjJNT_HINGE || pj->type == mjJNT_SLIDE) && !axis_aligned)) {
         m->body_simple[i] = 0;
       }
 
@@ -1804,9 +2116,9 @@ void mjCModel::CopyTree(mjModel* m) {
       // set qpos0 and qpos_spring, check type
       switch (pj->type) {
       case mjJNT_FREE:
-        copyvec(m->qpos0+qposadr, pb->pos, 3);
-        copyvec(m->qpos0+qposadr+3, pb->quat, 4);
-        mju_copy(m->qpos_spring+qposadr, m->qpos0+qposadr, 7);
+        mjuu_copyvec(m->qpos0+qposadr, pb->pos, 3);
+        mjuu_copyvec(m->qpos0+qposadr+3, pb->quat, 4);
+        mjuu_copyvec(m->qpos_spring+qposadr, m->qpos0+qposadr, 7);
         break;
 
       case mjJNT_BALL:
@@ -1814,7 +2126,7 @@ void mjCModel::CopyTree(mjModel* m) {
         m->qpos0[qposadr+1] = 0;
         m->qpos0[qposadr+2] = 0;
         m->qpos0[qposadr+3] = 0;
-        mju_copy4(m->qpos_spring+qposadr, m->qpos0+qposadr);
+        mjuu_copyvec(m->qpos_spring+qposadr, m->qpos0+qposadr, 4);
         break;
 
       case mjJNT_SLIDE:
@@ -1828,12 +2140,12 @@ void mjCModel::CopyTree(mjModel* m) {
       }
 
       // set dof fields for this joint
-      for (int j1=0; j1<nVEL[pj->type]; j1++) {
+      for (int j1=0; j1<pj->nv(); j1++) {
         // set attributes
         m->dof_bodyid[dofadr] = pb->id;
         m->dof_jntid[dofadr] = jid;
-        copyvec(m->dof_solref+mjNREF*dofadr, pj->solref_friction, mjNREF);
-        copyvec(m->dof_solimp+mjNIMP*dofadr, pj->solimp_friction, mjNIMP);
+        mjuu_copyvec(m->dof_solref+mjNREF*dofadr, pj->solref_friction, mjNREF);
+        mjuu_copyvec(m->dof_solimp+mjNIMP*dofadr, pj->solimp_friction, mjNIMP);
         m->dof_frictionloss[dofadr] = (mjtNum)pj->frictionloss;
         m->dof_armature[dofadr] = (mjtNum)pj->armature;
         m->dof_damping[dofadr] = (mjtNum)pj->damping;
@@ -1848,7 +2160,7 @@ void mjCModel::CopyTree(mjModel* m) {
 
       // advance joint and qpos counters
       jntadr++;
-      qposadr += nPOS[pj->type];
+      qposadr += pj->nq();
     }
 
     // simple body with sliders and no rotational dofs: promote to simple level 2
@@ -1856,8 +2168,8 @@ void mjCModel::CopyTree(mjModel* m) {
       m->body_simple[i] = 2;
       for (int j=0; j<(int)pb->joints.size(); j++) {
         if (pb->joints[j]->type!=mjJNT_SLIDE) {
-        m->body_simple[i] = 1;
-        break;
+          m->body_simple[i] = 1;
+          break;
         }
       }
     }
@@ -1884,34 +2196,34 @@ void mjCModel::CopyTree(mjModel* m) {
       m->geom_matid[gid] = pg->matid;
       m->geom_group[gid] = pg->group;
       m->geom_priority[gid] = pg->priority;
-      copyvec(m->geom_size+3*gid, pg->size, 3);
-      copyvec(m->geom_aabb+6*gid, pg->aabb, 6);
-      copyvec(m->geom_pos+3*gid, pg->pos, 3);
-      copyvec(m->geom_quat+4*gid, pg->quat, 4);
-      copyvec(m->geom_friction+3*gid, pg->friction, 3);
+      mjuu_copyvec(m->geom_size+3*gid, pg->size, 3);
+      mjuu_copyvec(m->geom_aabb+6*gid, pg->aabb, 6);
+      mjuu_copyvec(m->geom_pos+3*gid, pg->pos, 3);
+      mjuu_copyvec(m->geom_quat+4*gid, pg->quat, 4);
+      mjuu_copyvec(m->geom_friction+3*gid, pg->friction, 3);
       m->geom_solmix[gid] = (mjtNum)pg->solmix;
-      copyvec(m->geom_solref+mjNREF*gid, pg->solref, mjNREF);
-      copyvec(m->geom_solimp+mjNIMP*gid, pg->solimp, mjNIMP);
+      mjuu_copyvec(m->geom_solref+mjNREF*gid, pg->solref, mjNREF);
+      mjuu_copyvec(m->geom_solimp+mjNIMP*gid, pg->solimp, mjNIMP);
       m->geom_margin[gid] = (mjtNum)pg->margin;
       m->geom_gap[gid] = (mjtNum)pg->gap;
-      copyvec(m->geom_fluid+mjNFLUID*gid, pg->fluid, mjNFLUID);
-      copyvec(m->geom_user+nuser_geom*gid, pg->get_userdata().data(), nuser_geom);
-      copyvec(m->geom_rgba+4*gid, pg->rgba, 4);
+      mjuu_copyvec(m->geom_fluid+mjNFLUID*gid, pg->fluid, mjNFLUID);
+      mjuu_copyvec(m->geom_user+nuser_geom*gid, pg->get_userdata().data(), nuser_geom);
+      mjuu_copyvec(m->geom_rgba+4*gid, pg->rgba, 4);
 
       // determine sameframe
+      double* nulldouble = static_cast<double*>(nullptr);
       if (IsNullPose(m->geom_pos+3*gid, m->geom_quat+4*gid)) {
-        m->geom_sameframe[gid] = 1;
-      } else if (pg->pos[0]==pb->ipos[0] &&
-                 pg->pos[1]==pb->ipos[1] &&
-                 pg->pos[2]==pb->ipos[2] &&
-                 pg->quat[0]==pb->iquat[0] &&
-                 pg->quat[1]==pb->iquat[1] &&
-                 pg->quat[2]==pb->iquat[2] &&
-                 pg->quat[3]==pb->iquat[3]) {
-        m->geom_sameframe[gid] = 2;
+        sameframe = mjSAMEFRAME_BODY;
+      } else if (IsNullPose(nullnum, m->geom_quat+4*gid)) {
+        sameframe = mjSAMEFRAME_BODYROT;
+      } else if (IsSamePose(pg->pos, pb->ipos, pg->quat, pb->iquat)) {
+        sameframe = mjSAMEFRAME_INERTIA;
+      } else if (IsSamePose(nulldouble, nulldouble, pg->quat, pb->iquat)) {
+        sameframe = mjSAMEFRAME_INERTIAROT;
       } else {
-        m->geom_sameframe[gid] = 0;
+        sameframe = mjSAMEFRAME_NONE;
       }
+      m->geom_sameframe[gid] = sameframe;
 
       // compute rbound
       m->geom_rbound[gid] = (mjtNum)pg->GetRBound();
@@ -1928,26 +2240,26 @@ void mjCModel::CopyTree(mjModel* m) {
       m->site_bodyid[sid] = ps->body->id;
       m->site_matid[sid] = ps->matid;
       m->site_group[sid] = ps->group;
-      copyvec(m->site_size+3*sid, ps->size, 3);
-      copyvec(m->site_pos+3*sid, ps->pos, 3);
-      copyvec(m->site_quat+4*sid, ps->quat, 4);
-      copyvec(m->site_user+nuser_site*sid, ps->userdata_.data(), nuser_site);
-      copyvec(m->site_rgba+4*sid, ps->rgba, 4);
+      mjuu_copyvec(m->site_size+3*sid, ps->size, 3);
+      mjuu_copyvec(m->site_pos+3*sid, ps->pos, 3);
+      mjuu_copyvec(m->site_quat+4*sid, ps->quat, 4);
+      mjuu_copyvec(m->site_user+nuser_site*sid, ps->userdata_.data(), nuser_site);
+      mjuu_copyvec(m->site_rgba+4*sid, ps->rgba, 4);
 
       // determine sameframe
+      double* nulldouble = static_cast<double*>(nullptr);
       if (IsNullPose(m->site_pos+3*sid, m->site_quat+4*sid)) {
-        m->site_sameframe[sid] = 1;
-      } else if (ps->pos[0]==pb->ipos[0] &&
-                 ps->pos[1]==pb->ipos[1] &&
-                 ps->pos[2]==pb->ipos[2] &&
-                 ps->quat[0]==pb->iquat[0] &&
-                 ps->quat[1]==pb->iquat[1] &&
-                 ps->quat[2]==pb->iquat[2] &&
-                 ps->quat[3]==pb->iquat[3]) {
-        m->site_sameframe[sid] = 2;
+        sameframe = mjSAMEFRAME_BODY;
+      } else if (IsNullPose(nullnum, m->site_quat+4*sid)) {
+        sameframe = mjSAMEFRAME_BODYROT;
+      } else if (IsSamePose(ps->pos, pb->ipos, ps->quat, pb->iquat)) {
+        sameframe = mjSAMEFRAME_INERTIA;
+      } else if (IsSamePose(nulldouble, nulldouble, ps->quat, pb->iquat)) {
+        sameframe = mjSAMEFRAME_INERTIAROT;
       } else {
-        m->site_sameframe[sid] = 0;
+        sameframe = mjSAMEFRAME_NONE;
       }
+      m->site_sameframe[sid] = sameframe;
     }
 
     // loop over cameras for this body
@@ -1960,14 +2272,15 @@ void mjCModel::CopyTree(mjModel* m) {
       m->cam_bodyid[cid] = pc->body->id;
       m->cam_mode[cid] = pc->mode;
       m->cam_targetbodyid[cid] = pc->targetbodyid;
-      copyvec(m->cam_pos+3*cid, pc->pos, 3);
-      copyvec(m->cam_quat+4*cid, pc->quat, 4);
+      mjuu_copyvec(m->cam_pos+3*cid, pc->pos, 3);
+      mjuu_copyvec(m->cam_quat+4*cid, pc->quat, 4);
+      m->cam_orthographic[cid] = pc->orthographic;
       m->cam_fovy[cid] = (mjtNum)pc->fovy;
       m->cam_ipd[cid] = (mjtNum)pc->ipd;
-      copyvec(m->cam_resolution+2*cid, pc->resolution, 2);
-      copyvec(m->cam_sensorsize+2*cid, pc->sensor_size, 2);
-      copyvec(m->cam_intrinsic+4*cid, pc->intrinsic, 4);
-      copyvec(m->cam_user+nuser_cam*cid, pc->get_userdata().data(), nuser_cam);
+      mjuu_copyvec(m->cam_resolution+2*cid, pc->resolution, 2);
+      mjuu_copyvec(m->cam_sensorsize+2*cid, pc->sensor_size, 2);
+      mjuu_copyvec(m->cam_intrinsic+4*cid, pc->intrinsic, 4);
+      mjuu_copyvec(m->cam_user+nuser_cam*cid, pc->get_userdata().data(), nuser_cam);
     }
 
     // loop over lights for this body
@@ -1983,14 +2296,15 @@ void mjCModel::CopyTree(mjModel* m) {
       m->light_directional[lid] = (mjtByte)pl->directional;
       m->light_castshadow[lid] = (mjtByte)pl->castshadow;
       m->light_active[lid] = (mjtByte)pl->active;
-      copyvec(m->light_pos+3*lid, pl->pos, 3);
-      copyvec(m->light_dir+3*lid, pl->dir, 3);
-      copyvec(m->light_attenuation+3*lid, pl->attenuation, 3);
+      mjuu_copyvec(m->light_pos+3*lid, pl->pos, 3);
+      mjuu_copyvec(m->light_dir+3*lid, pl->dir, 3);
+      m->light_bulbradius[lid] = pl->bulbradius;
+      mjuu_copyvec(m->light_attenuation+3*lid, pl->attenuation, 3);
       m->light_cutoff[lid] = pl->cutoff;
       m->light_exponent[lid] = pl->exponent;
-      copyvec(m->light_ambient+3*lid, pl->ambient, 3);
-      copyvec(m->light_diffuse+3*lid, pl->diffuse, 3);
-      copyvec(m->light_specular+3*lid, pl->specular, 3);
+      mjuu_copyvec(m->light_ambient+3*lid, pl->ambient, 3);
+      mjuu_copyvec(m->light_diffuse+3*lid, pl->diffuse, 3);
+      mjuu_copyvec(m->light_specular+3*lid, pl->specular, 3);
     }
   }
 
@@ -2019,6 +2333,13 @@ void mjCModel::CopyTree(mjModel* m) {
     }
   }
 
+  // count bodies with gravity compensation, compute ngravcomp
+  int ngravcomp = 0;
+  for (int i=0; i<nbody; i++) {
+    ngravcomp += (m->body_gravcomp[i] > 0);
+  }
+  m->ngravcomp = ngravcomp;
+
   // compute nM and dof_Madr
   nM = 0;
   for (int i=0; i<nv; i++) {
@@ -2041,14 +2362,14 @@ void mjCModel::CopyTree(mjModel* m) {
   // compute subtreedofs in backward pass over bodies
   for (int i = nbody - 1; i > 0; i--) {
     // add body dofs to self count
-    bodies[i]->subtreedofs += bodies[i]->dofnum;
+    bodies_[i]->subtreedofs += bodies_[i]->dofnum;
 
     // add to parent count
-    bodies[bodies[i]->parentid]->subtreedofs += bodies[i]->subtreedofs;
+    bodies_[bodies_[i]->parentid]->subtreedofs += bodies_[i]->subtreedofs;
   }
 
   // make sure all dofs are in world "subtree", SHOULD NOT OCCUR
-  if (bodies[0]->subtreedofs != nv) {
+  if (bodies_[0]->subtreedofs != nv) {
     throw mjCError(0, "all DOFs should be in world subtree");
   }
 
@@ -2056,13 +2377,13 @@ void mjCModel::CopyTree(mjModel* m) {
   nB = 0;
   for (int i = 0; i < nbody; i++) {
     // add subtree dofs (including self)
-    nB += bodies[i]->subtreedofs;
+    nB += bodies_[i]->subtreedofs;
 
     // add dofs in ancestor bodies
-    int j = bodies[i]->parentid;
+    int j = bodies_[i]->parentid;
     while (j > 0) {
-      nB += bodies[j]->dofnum;
-      j = bodies[j]->parentid;
+      nB += bodies_[j]->dofnum;
+      j = bodies_[j]->parentid;
     }
   }
   m->nB = nB;
@@ -2077,6 +2398,20 @@ void mjCModel::CopyTree(mjModel* m) {
     }
     m->dof_simplenum[i] = count;
   }
+
+  // compute nC
+  int nOD = 0;  // number of off-diagonal (non-simple) parent dofs
+  for (int i=0; i<nv; i++) {
+    // count ancestor (off-diagonal) dofs
+    if (!m->dof_simplenum[i]) {
+      int j = i;
+      while (j >= 0) {
+        if (j != i) nOD++;
+        j = m->dof_parentid[j];
+      }
+    }
+  }
+   m->nC = nC = 2 * nOD + nv;
 }
 
 
@@ -2109,7 +2444,7 @@ void mjCModel::CopyObjects(mjModel* m) {
   graph_adr = 0;
   for (int i=0; i<nmesh; i++) {
     // get pointer
-    mjCMesh* pme = meshes[i];
+    mjCMesh* pme = meshes_[i];
 
     // set fields
     m->mesh_vertadr[i] = vert_adr;
@@ -2121,11 +2456,11 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->mesh_faceadr[i] = face_adr;
     m->mesh_facenum[i] = pme->nface();
     m->mesh_graphadr[i] = (pme->szgraph() ? graph_adr : -1);
-    m->mesh_bvhnum[i] = pme->tree().nbvh;
-    m->mesh_bvhadr[i] = pme->tree().nbvh ? bvh_adr : -1;
-    copyvec(&m->mesh_scale[3 * i], pme->get_scale(), 3);
-    copyvec(&m->mesh_pos[3 * i], pme->GetOffsetPosPtr(), 3);
-    copyvec(&m->mesh_quat[4 * i], pme->GetOffsetQuatPtr(), 4);
+    m->mesh_bvhnum[i] = pme->tree().Nbvh();
+    m->mesh_bvhadr[i] = pme->tree().Nbvh() ? bvh_adr : -1;
+    mjuu_copyvec(&m->mesh_scale[3 * i], pme->Scale(), 3);
+    mjuu_copyvec(&m->mesh_pos[3 * i], pme->GetOffsetPosPtr(), 3);
+    mjuu_copyvec(&m->mesh_quat[4 * i], pme->GetOffsetQuatPtr(), 4);
 
     // copy vertices, normals, faces, texcoords, aux data
     pme->CopyVert(m->mesh_vert + 3*vert_adr);
@@ -2143,12 +2478,12 @@ void mjCModel::CopyObjects(mjModel* m) {
     }
 
     // copy bvh data
-    if (pme->tree().nbvh) {
-      memcpy(m->bvh_aabb + 6*bvh_adr, pme->tree().bvh.data(), 6*pme->tree().nbvh*sizeof(mjtNum));
-      memcpy(m->bvh_child + 2*bvh_adr, pme->tree().child.data(), 2*pme->tree().nbvh*sizeof(int));
-      memcpy(m->bvh_depth + bvh_adr, pme->tree().level.data(), pme->tree().nbvh*sizeof(int));
-      for (int j=0; j<pme->tree().nbvh; j++) {
-        m->bvh_nodeid[j + bvh_adr] = pme->tree().nodeid[j] ? *(pme->tree().nodeid[j]) : -1;
+    if (pme->tree().Nbvh()) {
+      memcpy(m->bvh_aabb + 6*bvh_adr, pme->tree().Bvh().data(), 6*pme->tree().Nbvh()*sizeof(mjtNum));
+      memcpy(m->bvh_child + 2*bvh_adr, pme->tree().Child().data(), 2*pme->tree().Nbvh()*sizeof(int));
+      memcpy(m->bvh_depth + bvh_adr, pme->tree().Level().data(), pme->tree().Nbvh()*sizeof(int));
+      for (int j=0; j<pme->tree().Nbvh(); j++) {
+        m->bvh_nodeid[j + bvh_adr] = pme->tree().Nodeid(j) ? *(pme->tree().Nodeid(j)) : -1;
       }
     }
 
@@ -2158,7 +2493,7 @@ void mjCModel::CopyObjects(mjModel* m) {
     texcoord_adr += (pme->HasTexcoord() ? pme->ntexcoord() : 0);
     face_adr += pme->nface();
     graph_adr += pme->szgraph();
-    bvh_adr += pme->tree().nbvh;
+    bvh_adr += pme->tree().Nbvh();
   }
 
   // flexes
@@ -2171,7 +2506,7 @@ void mjCModel::CopyObjects(mjModel* m) {
   texcoord_adr = 0;
   for (int i=0; i<nflex; i++) {
     // get pointer
-    mjCFlex* pfl = flexes[i];
+    mjCFlex* pfl = flexes_[i];
 
     // set fields: geom-like
     m->flex_contype[i] = pfl->contype;
@@ -2181,13 +2516,13 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->flex_group[i] = pfl->group;
     m->flex_priority[i] = pfl->priority;
     m->flex_solmix[i] = (mjtNum)pfl->solmix;
-    copyvec(m->flex_solref + mjNREF * i, pfl->solref, mjNREF);
-    copyvec(m->flex_solimp + mjNIMP * i, pfl->solimp, mjNIMP);
+    mjuu_copyvec(m->flex_solref + mjNREF * i, pfl->solref, mjNREF);
+    mjuu_copyvec(m->flex_solimp + mjNIMP * i, pfl->solimp, mjNIMP);
     m->flex_radius[i] = (mjtNum)pfl->radius;
-    copyvec(m->flex_friction + 3 * i, pfl->friction, 3);
+    mjuu_copyvec(m->flex_friction + 3 * i, pfl->friction, 3);
     m->flex_margin[i] = (mjtNum)pfl->margin;
     m->flex_gap[i] = (mjtNum)pfl->gap;
-    copyvec(m->flex_rgba + 4 * i, pfl->rgba, 4);
+    mjuu_copyvec(m->flex_rgba + 4 * i, pfl->rgba, 4);
 
     // set fields: mesh-like
     m->flex_dim[i] = pfl->dim;
@@ -2228,30 +2563,30 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->flex_flatskin[i] = pfl->flatskin;
     m->flex_selfcollide[i] = pfl->selfcollide;
     m->flex_activelayers[i] = pfl->activelayers;
-    m->flex_bvhnum[i] = pfl->tree.nbvh;
-    m->flex_bvhadr[i] = pfl->tree.nbvh ? bvh_adr : -1;
+    m->flex_bvhnum[i] = pfl->tree.Nbvh();
+    m->flex_bvhadr[i] = pfl->tree.Nbvh() ? bvh_adr : -1;
 
     // find equality constraint referencing this flex
     m->flex_edgeequality[i] = 0;
-    for (int k=0; k<(int)equalities.size(); k++) {
-      if (equalities[k]->type==mjEQ_FLEX && equalities[k]->name1_==pfl->name) {
+    for (int k=0; k<(int)equalities_.size(); k++) {
+      if (equalities_[k]->type==mjEQ_FLEX && equalities_[k]->name1_==pfl->name) {
         m->flex_edgeequality[i] = 1;
         break;
       }
     }
 
     // copy bvh data (flex aabb computed dynamically in mjData)
-    if (pfl->tree.nbvh) {
-      memcpy(m->bvh_child + 2*bvh_adr, pfl->tree.child.data(), 2*pfl->tree.nbvh*sizeof(int));
-      memcpy(m->bvh_depth + bvh_adr, pfl->tree.level.data(), pfl->tree.nbvh*sizeof(int));
-      for (int i=0; i<pfl->tree.nbvh; i++) {
-        m->bvh_nodeid[i+ bvh_adr] = pfl->tree.nodeid[i] ? *(pfl->tree.nodeid[i]) : -1;
+    if (pfl->tree.Nbvh()) {
+      memcpy(m->bvh_child + 2*bvh_adr, pfl->tree.Child().data(), 2*pfl->tree.Nbvh()*sizeof(int));
+      memcpy(m->bvh_depth + bvh_adr, pfl->tree.Level().data(), pfl->tree.Nbvh()*sizeof(int));
+      for (int i=0; i<pfl->tree.Nbvh(); i++) {
+        m->bvh_nodeid[i+ bvh_adr] = pfl->tree.Nodeid(i) ? *(pfl->tree.Nodeid(i)) : -1;
       }
     }
 
     // copy or set vert
     if (pfl->centered) {
-      mju_zero(m->flex_vert + 3*vert_adr, 3*pfl->nvert);
+      mjuu_zerovec(m->flex_vert + 3*vert_adr, 3*pfl->nvert);
     }
     else {
       memcpy(m->flex_vert + 3*vert_adr, pfl->vert_.data(), 3*pfl->nvert*sizeof(mjtNum));
@@ -2272,10 +2607,14 @@ void mjCModel::CopyObjects(mjModel* m) {
       m->flex_edge[2*(edge_adr+k)] = pfl->edge[k].first;
       m->flex_edge[2*(edge_adr+k)+1] = pfl->edge[k].second;
 
-      // check if vertex body weldids are the same
-      int b1 = pfl->vertbodyid[pfl->edge[k].first];
-      int b2 = pfl->vertbodyid[pfl->edge[k].second];
-      m->flexedge_rigid[edge_adr+k] = (bodies[b1]->weldid == bodies[b2]->weldid);
+      if (pfl->rigid) {
+        m->flexedge_rigid[edge_adr+k] = 1;
+      } else {
+        // check if vertex body weldids are the same
+        int b1 = pfl->vertbodyid[pfl->edge[k].first];
+        int b2 = pfl->vertbodyid[pfl->edge[k].second];
+        m->flexedge_rigid[edge_adr+k] = (bodies_[b1]->weldid == bodies_[b2]->weldid);
+      }
     }
 
     // advance counters
@@ -2286,7 +2625,7 @@ void mjCModel::CopyObjects(mjModel* m) {
     shelldata_adr += (int)pfl->shell.size();
     evpair_adr += (int)pfl->evpair.size()/2;
     texcoord_adr += (int)pfl->texcoord_.size()/2;
-    bvh_adr += pfl->tree.nbvh;
+    bvh_adr += pfl->tree.Nbvh();
   }
 
   // skins
@@ -2297,12 +2636,12 @@ void mjCModel::CopyObjects(mjModel* m) {
   bonevert_adr = 0;
   for (int i=0; i<nskin; i++) {
     // get pointer
-    mjCSkin* psk = skins[i];
+    mjCSkin* psk = skins_[i];
 
     // set fields
     m->skin_matid[i] = psk->matid;
     m->skin_group[i] = psk->group;
-    copyvec(m->skin_rgba+4*i, psk->rgba, 4);
+    mjuu_copyvec(m->skin_rgba+4*i, psk->rgba, 4);
     m->skin_inflate[i] = psk->inflate;
     m->skin_vertadr[i] = vert_adr;
     m->skin_vertnum[i] = psk->get_vert().size()/3;
@@ -2354,10 +2693,10 @@ void mjCModel::CopyObjects(mjModel* m) {
   data_adr = 0;
   for (int i=0; i<nhfield; i++) {
     // get pointer
-    mjCHField* phf = hfields[i];
+    mjCHField* phf = hfields_[i];
 
     // set fields
-    copyvec(m->hfield_size+4*i, phf->size, 4);
+    mjuu_copyvec(m->hfield_size+4*i, phf->size, 4);
     m->hfield_nrow[i] = phf->nrow;
     m->hfield_ncol[i] = phf->ncol;
     m->hfield_adr[i] = data_adr;
@@ -2373,76 +2712,83 @@ void mjCModel::CopyObjects(mjModel* m) {
   data_adr = 0;
   for (int i=0; i<ntex; i++) {
     // get pointer
-    mjCTexture* ptex = textures[i];
+    mjCTexture* ptex = textures_[i];
 
     // set fields
     m->tex_type[i] = ptex->type;
     m->tex_height[i] = ptex->height;
     m->tex_width[i] = ptex->width;
+    m->tex_nchannel[i] = ptex->nchannel;
     m->tex_adr[i] = data_adr;
 
     // copy rgb data
-    memcpy(m->tex_rgb + data_adr, ptex->rgb.data(), 3*ptex->width*ptex->height);
+    memcpy(m->tex_data + data_adr, ptex->data_.data(),
+           ptex->nchannel * ptex->width * ptex->height);
 
     // advance counter
-    data_adr += 3*ptex->width*ptex->height;
+    data_adr += ptex->nchannel * ptex->width * ptex->height;
   }
 
   // materials
   for (int i=0; i<nmat; i++) {
     // get pointer
-    mjCMaterial* pmat = materials[i];
+    mjCMaterial* pmat = materials_[i];
 
     // set fields
-    m->mat_texid[i] = pmat->texid;
+    for (int j=0; j<mjNTEXROLE; j++) {
+      m->mat_texid[mjNTEXROLE*i+j] = pmat->texid[j];
+    }
     m->mat_texuniform[i] = pmat->texuniform;
-    copyvec(m->mat_texrepeat+2*i, pmat->texrepeat, 2);
+    mjuu_copyvec(m->mat_texrepeat+2*i, pmat->texrepeat, 2);
     m->mat_emission[i] = pmat->emission;
     m->mat_specular[i] = pmat->specular;
     m->mat_shininess[i] = pmat->shininess;
     m->mat_reflectance[i] = pmat->reflectance;
-    copyvec(m->mat_rgba+4*i, pmat->rgba, 4);
+    m->mat_metallic[i] = pmat->metallic;
+    m->mat_roughness[i] = pmat->roughness;
+    mjuu_copyvec(m->mat_rgba+4*i, pmat->rgba, 4);
   }
 
   // geom pairs to include
   for (int i=0; i<npair; i++) {
-    m->pair_dim[i] = pairs[i]->condim;
-    m->pair_geom1[i] = pairs[i]->geom1->id;
-    m->pair_geom2[i] = pairs[i]->geom2->id;
-    m->pair_signature[i] = pairs[i]->signature;
-    copyvec(m->pair_solref+mjNREF*i, pairs[i]->solref, mjNREF);
-    copyvec(m->pair_solreffriction+mjNREF*i, pairs[i]->solreffriction, mjNREF);
-    copyvec(m->pair_solimp+mjNIMP*i, pairs[i]->solimp, mjNIMP);
-    m->pair_margin[i] = (mjtNum)pairs[i]->margin;
-    m->pair_gap[i] = (mjtNum)pairs[i]->gap;
-    copyvec(m->pair_friction+5*i, pairs[i]->friction, 5);
+    m->pair_dim[i] = pairs_[i]->condim;
+    m->pair_geom1[i] = pairs_[i]->geom1->id;
+    m->pair_geom2[i] = pairs_[i]->geom2->id;
+    m->pair_signature[i] = pairs_[i]->signature;
+    mjuu_copyvec(m->pair_solref+mjNREF*i, pairs_[i]->solref, mjNREF);
+    mjuu_copyvec(m->pair_solreffriction+mjNREF*i, pairs_[i]->solreffriction, mjNREF);
+    mjuu_copyvec(m->pair_solimp+mjNIMP*i, pairs_[i]->solimp, mjNIMP);
+    m->pair_margin[i] = (mjtNum)pairs_[i]->margin;
+    m->pair_gap[i] = (mjtNum)pairs_[i]->gap;
+    mjuu_copyvec(m->pair_friction+5*i, pairs_[i]->friction, 5);
   }
 
   // body pairs to exclude
   for (int i=0; i<nexclude; i++) {
-    m->exclude_signature[i] = excludes[i]->signature;
+    m->exclude_signature[i] = excludes_[i]->signature;
   }
 
   // equality constraints
   for (int i=0; i<neq; i++) {
     // get pointer
-    mjCEquality* peq = equalities[i];
+    mjCEquality* peq = equalities_[i];
 
     // set fields
     m->eq_type[i] = peq->type;
     m->eq_obj1id[i] = peq->obj1id;
     m->eq_obj2id[i] = peq->obj2id;
+    m->eq_objtype[i] = peq->objtype;
     m->eq_active0[i] = peq->active;
-    copyvec(m->eq_solref+mjNREF*i, peq->solref, mjNREF);
-    copyvec(m->eq_solimp+mjNIMP*i, peq->solimp, mjNIMP);
-    copyvec(m->eq_data+mjNEQDATA*i, peq->data, mjNEQDATA);
+    mjuu_copyvec(m->eq_solref+mjNREF*i, peq->solref, mjNREF);
+    mjuu_copyvec(m->eq_solimp+mjNIMP*i, peq->solimp, mjNIMP);
+    mjuu_copyvec(m->eq_data+mjNEQDATA*i, peq->data, mjNEQDATA);
   }
 
   // tendons and wraps
   adr = 0;
   for (int i=0; i<ntendon; i++) {
     // get pointer
-    mjCTendon* pte = tendons[i];
+    mjCTendon* pte = tendons_[i];
 
     // set fields
     m->tendon_adr[i] = adr;
@@ -2451,10 +2797,10 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->tendon_group[i] = pte->group;
     m->tendon_limited[i] = (mjtByte)pte->is_limited();
     m->tendon_width[i] = (mjtNum)pte->width;
-    copyvec(m->tendon_solref_lim+mjNREF*i, pte->solref_limit, mjNREF);
-    copyvec(m->tendon_solimp_lim+mjNIMP*i, pte->solimp_limit, mjNIMP);
-    copyvec(m->tendon_solref_fri+mjNREF*i, pte->solref_friction, mjNREF);
-    copyvec(m->tendon_solimp_fri+mjNIMP*i, pte->solimp_friction, mjNIMP);
+    mjuu_copyvec(m->tendon_solref_lim+mjNREF*i, pte->solref_limit, mjNREF);
+    mjuu_copyvec(m->tendon_solimp_lim+mjNIMP*i, pte->solimp_limit, mjNIMP);
+    mjuu_copyvec(m->tendon_solref_fri+mjNREF*i, pte->solref_friction, mjNREF);
+    mjuu_copyvec(m->tendon_solimp_fri+mjNIMP*i, pte->solimp_friction, mjNIMP);
     m->tendon_range[2*i] = (mjtNum)pte->range[0];
     m->tendon_range[2*i+1] = (mjtNum)pte->range[1];
     m->tendon_margin[i] = (mjtNum)pte->margin;
@@ -2463,8 +2809,8 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->tendon_frictionloss[i] = (mjtNum)pte->frictionloss;
     m->tendon_lengthspring[2*i] = (mjtNum)pte->springlength[0];
     m->tendon_lengthspring[2*i+1] = (mjtNum)pte->springlength[1];
-    copyvec(m->tendon_user+nuser_tendon*i, pte->get_userdata().data(), nuser_tendon);
-    copyvec(m->tendon_rgba+4*i, pte->rgba, 4);
+    mjuu_copyvec(m->tendon_user+nuser_tendon*i, pte->get_userdata().data(), nuser_tendon);
+    mjuu_copyvec(m->tendon_rgba+4*i, pte->rgba, 4);
 
     // set wraps
     for (int j=0; j<(int)pte->path.size(); j++) {
@@ -2484,7 +2830,7 @@ void mjCModel::CopyObjects(mjModel* m) {
   adr = 0;
   for (int i=0; i<nu; i++) {
     // get pointer
-    mjCActuator* pac = actuators[i];
+    mjCActuator* pac = actuators_[i];
 
     // set fields
     m->actuator_trntype[i] = pac->trntype;
@@ -2493,8 +2839,10 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->actuator_biastype[i] = pac->biastype;
     m->actuator_trnid[2*i] = pac->trnid[0];
     m->actuator_trnid[2*i+1] = pac->trnid[1];
-    m->actuator_actnum[i] = pac->actdim + pac->plugin_actdim;
+    m->actuator_actnum[i] = pac->actdim;
     m->actuator_actadr[i] = m->actuator_actnum[i] ? adr : -1;
+    pac->actadr_ = m->actuator_actadr[i];
+    pac->actdim_ = m->actuator_actnum[i];
     adr += m->actuator_actnum[i];
     m->actuator_group[i] = pac->group;
     m->actuator_ctrllimited[i] = (mjtByte)pac->is_ctrllimited();
@@ -2502,22 +2850,22 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->actuator_actlimited[i] = (mjtByte)pac->is_actlimited();
     m->actuator_actearly[i] = pac->actearly;
     m->actuator_cranklength[i] = (mjtNum)pac->cranklength;
-    copyvec(m->actuator_gear + 6*i, pac->gear, 6);
-    copyvec(m->actuator_dynprm + mjNDYN*i, pac->dynprm, mjNDYN);
-    copyvec(m->actuator_gainprm + mjNGAIN*i, pac->gainprm, mjNGAIN);
-    copyvec(m->actuator_biasprm + mjNBIAS*i, pac->biasprm, mjNBIAS);
-    copyvec(m->actuator_ctrlrange + 2*i, pac->ctrlrange, 2);
-    copyvec(m->actuator_forcerange + 2*i, pac->forcerange, 2);
-    copyvec(m->actuator_actrange + 2*i, pac->actrange, 2);
-    copyvec(m->actuator_lengthrange + 2*i, pac->lengthrange, 2);
-    copyvec(m->actuator_user+nuser_actuator*i, pac->get_userdata().data(), nuser_actuator);
+    mjuu_copyvec(m->actuator_gear + 6*i, pac->gear, 6);
+    mjuu_copyvec(m->actuator_dynprm + mjNDYN*i, pac->dynprm, mjNDYN);
+    mjuu_copyvec(m->actuator_gainprm + mjNGAIN*i, pac->gainprm, mjNGAIN);
+    mjuu_copyvec(m->actuator_biasprm + mjNBIAS*i, pac->biasprm, mjNBIAS);
+    mjuu_copyvec(m->actuator_ctrlrange + 2*i, pac->ctrlrange, 2);
+    mjuu_copyvec(m->actuator_forcerange + 2*i, pac->forcerange, 2);
+    mjuu_copyvec(m->actuator_actrange + 2*i, pac->actrange, 2);
+    mjuu_copyvec(m->actuator_lengthrange + 2*i, pac->lengthrange, 2);
+    mjuu_copyvec(m->actuator_user+nuser_actuator*i, pac->get_userdata().data(), nuser_actuator);
   }
 
   // sensors
   adr = 0;
   for (int i=0; i<nsensor; i++) {
     // get pointer
-    mjCSensor* psen = sensors[i];
+    mjCSensor* psen = sensors_[i];
 
     // set fields
     m->sensor_type[i] = psen->type;
@@ -2530,7 +2878,7 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->sensor_dim[i] = psen->dim;
     m->sensor_cutoff[i] = (mjtNum)psen->cutoff;
     m->sensor_noise[i] = (mjtNum)psen->noise;
-    copyvec(m->sensor_user+nuser_sensor*i, psen->get_userdata().data(), nuser_sensor);
+    mjuu_copyvec(m->sensor_user+nuser_sensor*i, psen->get_userdata().data(), nuser_sensor);
 
     // calculate address and advance
     m->sensor_adr[i] = adr;
@@ -2541,7 +2889,7 @@ void mjCModel::CopyObjects(mjModel* m) {
   adr = 0;
   for (int i=0; i<nnumeric; i++) {
     // get pointer
-    mjCNumeric* pcu = numerics[i];
+    mjCNumeric* pcu = numerics_[i];
 
     // set fields
     m->numeric_adr[i] = adr;
@@ -2561,7 +2909,7 @@ void mjCModel::CopyObjects(mjModel* m) {
   adr = 0;
   for (int i=0; i<ntext; i++) {
     // get pointer
-    mjCText* pte = texts[i];
+    mjCText* pte = texts_[i];
 
     // set fields
     m->text_adr[i] = adr;
@@ -2576,7 +2924,7 @@ void mjCModel::CopyObjects(mjModel* m) {
   adr = 0;
   for (int i=0; i<ntuple; i++) {
     // get pointer
-    mjCTuple* ptu = tuples[i];
+    mjCTuple* ptu = tuples_[i];
 
     // set fields
     m->tuple_adr[i] = adr;
@@ -2594,35 +2942,183 @@ void mjCModel::CopyObjects(mjModel* m) {
   // copy keyframe data
   for (int i=0; i<nkey; i++) {
     // copy data
-    m->key_time[i] = (mjtNum)keys[i]->time;
-    copyvec(m->key_qpos+i*nq, keys[i]->qpos_.data(), nq);
-    copyvec(m->key_qvel+i*nv, keys[i]->qvel_.data(), nv);
+    m->key_time[i] = (mjtNum)keys_[i]->time;
+    mjuu_copyvec(m->key_qpos+i*nq, keys_[i]->qpos_.data(), nq);
+    mjuu_copyvec(m->key_qvel+i*nv, keys_[i]->qvel_.data(), nv);
     if (na) {
-      copyvec(m->key_act+i*na, keys[i]->act_.data(), na);
+      mjuu_copyvec(m->key_act+i*na, keys_[i]->act_.data(), na);
     }
     if (nmocap) {
-      copyvec(m->key_mpos + i*3*nmocap, keys[i]->mpos_.data(), 3*nmocap);
-      copyvec(m->key_mquat + i*4*nmocap, keys[i]->mquat_.data(), 4*nmocap);
+      mjuu_copyvec(m->key_mpos + i*3*nmocap, keys_[i]->mpos_.data(), 3*nmocap);
+      mjuu_copyvec(m->key_mquat + i*4*nmocap, keys_[i]->mquat_.data(), 4*nmocap);
     }
 
     // normalize quaternions in m->key_qpos
     for (int j=0; j<m->njnt; j++) {
       if (m->jnt_type[j]==mjJNT_BALL || m->jnt_type[j]==mjJNT_FREE) {
-        mju_normalize4(m->key_qpos+i*nq+m->jnt_qposadr[j]+3*(m->jnt_type[j]==mjJNT_FREE));
+        mjuu_normvec(m->key_qpos+i*nq+m->jnt_qposadr[j]+3*(m->jnt_type[j]==mjJNT_FREE), 4);
       }
     }
 
     // normalize quaternions in m->key_mquat
     for (int j=0; j<nmocap; j++) {
-      mju_normalize4(m->key_mquat+i*4*nmocap+4*j);
+      mjuu_normvec(m->key_mquat+i*4*nmocap+4*j, 4);
     }
 
-    copyvec(m->key_ctrl+i*nu, keys[i]->ctrl_.data(), nu);
+    mjuu_copyvec(m->key_ctrl+i*nu, keys_[i]->ctrl_.data(), nu);
   }
 
   // save qpos0 in user model (to recognize changed key_qpos in write)
   qpos0.resize(nq);
-  mju_copy(qpos0.data(), m->qpos0, nq);
+  mjuu_copyvec(qpos0.data(), m->qpos0, nq);
+}
+
+
+
+// save the current state
+template <class T>
+void mjCModel::SaveState(const std::string& state_name, const T* qpos, const T* qvel, const T* act,
+                         const T* ctrl, const T* mpos, const T* mquat) {
+  for (auto joint : joints_) {
+    if (joint->qposadr_ == -1 || joint->dofadr_ == -1) {
+      throw mjCError(nullptr, "SaveState: joint %s has no address", joint->name.c_str());
+    }
+    if (qpos) mjuu_copyvec(joint->qpos(state_name), qpos + joint->qposadr_, joint->nq());
+    if (qvel) mjuu_copyvec(joint->qvel(state_name), qvel + joint->dofadr_, joint->nv());
+  }
+
+  for (unsigned int i=0; i<actuators_.size(); i++) {
+    auto actuator = actuators_[i];
+    if (actuator->actadr_ != -1 && actuator->actdim_ != -1 && act) {
+      actuator->act(state_name).assign(actuator->actdim_, 0);
+      mjuu_copyvec(actuator->act(state_name).data(), act + actuator->actadr_, actuator->actdim_);
+    }
+    if (ctrl) {
+      actuator->ctrl(state_name) = ctrl[i];
+    }
+  }
+
+  for (auto body : bodies_) {
+    if (!body->spec.mocap) {
+      continue;
+    }
+    if (mpos) {
+      mjuu_copyvec(body->mpos(state_name), mpos + 3*body->mocapid, 3);
+    }
+    if (mquat) {
+      mjuu_copyvec(body->mquat(state_name), mquat + 4*body->mocapid, 4);
+    }
+  }
+}
+
+
+
+// clear existing data
+void mjCModel::MakeData(const mjModel* m, mjData** dest) {
+  mj_makeRawData(dest, m);
+  mjData* d = *dest;
+  if (d) {
+    mj_initPlugin(m, d);
+    mj_resetData(m, d);
+  }
+}
+
+
+
+// restore the previous state
+template <class T>
+void mjCModel::RestoreState(const std::string& state_name, const mjtNum* pos0,
+                            const mjtNum* mpos0, const mjtNum* mquat0, T* qpos,
+                            T* qvel, T* act, T* ctrl, T* mpos, T* mquat) {
+  for (auto joint : joints_) {
+    if (qpos) {
+      if (mjuu_defined(joint->qpos(state_name)[0])) {
+        mjuu_copyvec(qpos + joint->qposadr_, joint->qpos(state_name), joint->nq());
+      } else {
+        mjuu_copyvec(qpos + joint->qposadr_, pos0 + joint->qposadr_, joint->nq());
+      }
+    }
+    if (mjuu_defined(joint->qvel(state_name)[0]) && qvel) {
+      mjuu_copyvec(qvel + joint->dofadr_, joint->qvel(state_name), joint->nv());
+    }
+  }
+
+  // restore act
+  for (unsigned int i=0; i<actuators_.size(); i++) {
+    auto actuator = actuators_[i];
+    if (!actuator->act(state_name).empty() && mjuu_defined(actuator->act(state_name)[0]) && act) {
+      mjuu_copyvec(act + actuator->actadr_, actuator->act(state_name).data(), actuator->actdim_);
+    }
+    if (ctrl) {
+      ctrl[i] = mjuu_defined(actuator->ctrl(state_name)) ? actuator->ctrl(state_name) : 0;
+    }
+  }
+
+  for (unsigned int i=0; i<bodies_.size(); i++) {
+    auto body = bodies_[i];
+    if (!body->mocap) {
+      continue;
+    }
+    if (mpos) {
+      if (mjuu_defined(body->mpos(state_name)[0])) {
+        mjuu_copyvec(mpos + 3*body->mocapid, body->mpos(state_name), 3);
+      } else {
+        mjuu_copyvec(mpos + 3*body->mocapid, mpos0 + 3*i, 3);
+      }
+    }
+    if (mquat) {
+      if (mjuu_defined(body->mquat(state_name)[0])) {
+        mjuu_copyvec(mquat + 4*body->mocapid, body->mquat(state_name), 4);
+      } else {
+        mjuu_copyvec(mquat + 4*body->mocapid, mquat0 + 4*i, 4);
+      }
+    }
+  }
+}
+
+// force explicit instantiations
+template void mjCModel::SaveState<mjtNum>(
+    const std::string& name, const mjtNum* qpos, const mjtNum* qvel, const mjtNum* act,
+    const mjtNum* ctrl, const mjtNum* mpos, const mjtNum* mquat);
+
+template void mjCModel::RestoreState<mjtNum>(
+    const std::string& name, const mjtNum* qpos0, const mjtNum* mpos0, const mjtNum* mquat0,
+    mjtNum* qpos, mjtNum* qvel, mjtNum* act, mjtNum* ctrl, mjtNum* mpos, mjtNum* mquat);
+
+
+
+// resolve keyframe references
+void mjCModel::StoreKeyframes() {
+  bool resetlists = false;
+
+  // create tree lists if they are empty, occurs if an uncompiled model is attached
+  if (bodies_.size() == 1 && geoms_.empty() && sites_.empty() && joints_.empty() &&
+      cameras_.empty() && lights_.empty() && frames_.empty()) {
+    MakeLists(bodies_[0]);
+    resetlists = true;
+  }
+
+  SaveDofOffsets();
+
+  for (auto& key : keys_) {
+    mjKeyInfo info;
+    info.name = prefix + key->name + suffix;
+    info.time = key->spec.time;
+    info.qpos = !key->spec_qpos_.empty();
+    info.qvel = !key->spec_qvel_.empty();
+    info.act = !key->spec_act_.empty();
+    info.ctrl = !key->spec_ctrl_.empty();
+    info.mpos = !key->spec_mpos_.empty();
+    info.mquat = !key->spec_mquat_.empty();
+    key_pending_.push_back(info);
+    SaveState(info.name, key->spec_qpos_.data(), key->spec_qvel_.data(),
+              key->spec_act_.data(), key->spec_ctrl_.data(),
+              key->spec_mpos_.data(), key->spec_mquat_.data());
+  }
+
+  if (resetlists) {
+    ResetTreeLists();
+  }
 }
 
 
@@ -2659,9 +3155,9 @@ void mjCModel::FuseReindex(mjCBody* body) {
                                body->bodies[i]->id : body->weldid);
   }
 
-  makelistid(joints, body->joints);
-  makelistid(geoms, body->geoms);
-  makelistid(sites, body->sites);
+  makelistid(joints_, body->joints);
+  makelistid(geoms_, body->geoms);
+  makelistid(sites_, body->sites);
 
   // process children recursively
   for (int i=0; i<body->bodies.size(); i++) {
@@ -2674,24 +3170,24 @@ void mjCModel::FuseReindex(mjCBody* body) {
 // fuse static bodies with their parent
 void mjCModel::FuseStatic(void) {
   // skip if model has potential to reference elements with changed ids
-  if (!skins.empty()        ||
-      !pairs.empty()        ||
-      !excludes.empty()     ||
-      !equalities.empty()   ||
-      !tendons.empty()      ||
-      !actuators.empty()    ||
-      !sensors.empty()      ||
-      !tuples.empty()       ||
-      !cameras.empty()      ||
-      !lights.empty()) {
+  if (!skins_.empty()        ||
+      !pairs_.empty()        ||
+      !excludes_.empty()     ||
+      !equalities_.empty()   ||
+      !tendons_.empty()      ||
+      !actuators_.empty()    ||
+      !sensors_.empty()      ||
+      !tuples_.empty()       ||
+      !cameras_.empty()      ||
+      !lights_.empty()) {
     return;
   }
 
   // process fusable bodies
-  for (int i=1; i<bodies.size(); i++) {
+  for (int i=1; i<bodies_.size(); i++) {
     // get body and parent
-    mjCBody* body = bodies[i];
-    mjCBody* par = bodies[body->parentid];
+    mjCBody* body = bodies_[i];
+    mjCBody* par = bodies_[body->parentid];
 
     // skip if body has joints or mocap
     if (!body->joints.empty() || body->mocap) {
@@ -2766,9 +3262,9 @@ void mjCModel::FuseStatic(void) {
 
         // compute principal axes of inertia
         mjuu_copyvec(par->fullinertia, toti, 6);
-        const char* err1 = par->FullInertia(par->iquat, par->inertia);
+        const char* err1 = mjuu_fullInertia(par->iquat, par->inertia, par->fullinertia);
         if (err1) {
-          throw mjCError(NULL, "error '%s' in fusing static body inertias", err1);
+          throw mjCError(nullptr, "error '%s' in fusing static body inertias", err1);
         }
       }
     }
@@ -2832,9 +3328,9 @@ void mjCModel::FuseStatic(void) {
 
     // find in global and erase
     found = false;
-    for (auto iter=bodies.begin(); iter!=bodies.end(); iter++) {
+    for (auto iter=bodies_.begin(); iter!=bodies_.end(); iter++) {
       if (*iter==body) {
-        bodies.erase(iter);
+        bodies_.erase(iter);
         found = true;
         break;
       }
@@ -2850,15 +3346,30 @@ void mjCModel::FuseStatic(void) {
     //------------- re-index bodies, joints, geoms, sites
 
     // body ids
-    for (int j=0; j<bodies.size(); j++) {
-      bodies[j]->id = j;
+    for (int j=0; j<bodies_.size(); j++) {
+      bodies_[j]->id = j;
     }
 
     // everything else
-    joints.clear();
-    geoms.clear();
-    sites.clear();
-    FuseReindex(bodies[0]);
+    joints_.clear();
+    geoms_.clear();
+    sites_.clear();
+    FuseReindex(bodies_[0]);
+
+    // recompute parent contype, conaffinity, and margin
+    par->contype = par->conaffinity = 0;
+    par->margin = 0;
+    for (const auto& geom : par->geoms) {
+      par->contype |= geom->contype;
+      par->conaffinity |= geom->conaffinity;
+      par->margin = mju_max(par->margin, geom->margin);
+    }
+
+    // recompute BVH
+    int nbvhfuse = body->tree.Nbvh() + par->tree.Nbvh();
+    par->ComputeBVH();
+    nbvhstatic += par->tree.Nbvh() - nbvhfuse;
+    nbvh += par->tree.Nbvh() - nbvhfuse;
 
     //------------- delete body (without deleting children)
 
@@ -2931,7 +3442,7 @@ static void processlist(mjListKeyMap& ids, vector<T*>& list,
       auto adjacent = std::adjacent_find(allnames.begin(), allnames.end());
       if (adjacent != allnames.end()) {
         string msg = "repeated name '" + *adjacent + "' in " + mju_type2Str(type);
-        throw mjCError(NULL, "%s", msg.c_str());
+        throw mjCError(nullptr, "%s", msg.c_str());
       }
     }
   }
@@ -2940,22 +3451,24 @@ static void processlist(mjListKeyMap& ids, vector<T*>& list,
 
 
 // set object ids, check for repeated names
-void mjCModel::ProcessLists() {
+void mjCModel::ProcessLists(bool checkrepeat) {
   for (int i = 0; i < mjNOBJECT; i++) {
-    if (i != mjOBJ_XBODY && object_lists[i]) {
-      processlist(ids, *object_lists[i], (mjtObj) i);
+    if (i != mjOBJ_XBODY && object_lists_[i]) {
+      ids[i].clear();
+      processlist(ids, *object_lists_[i], (mjtObj) i, checkrepeat);
     }
   }
 
   // check repeated names in meta elements
-  processlist(ids, frames, mjOBJ_FRAME);
+  processlist(ids, frames_, mjOBJ_FRAME, checkrepeat);
 }
 
 
 
 // error handler for low-level engine
+constexpr int kErrorBufferSize = 500;
 static thread_local std::jmp_buf error_jmp_buf;
-static thread_local char errortext[500] = "";
+static thread_local char errortext[kErrorBufferSize] = "";
 static void errorhandler(const char* msg) {
   mju::strcpy_arr(errortext, msg);
   std::longjmp(error_jmp_buf, 1);
@@ -2963,22 +3476,28 @@ static void errorhandler(const char* msg) {
 
 
 // warning handler for low-level engine
-static thread_local char warningtext[500] = "";
+static thread_local char warningtext[kErrorBufferSize] = "";       // top-level warning buffer
+static thread_local std::string* local_warningtext_ptr = nullptr;  // sub-thread warning buffer
 static void warninghandler(const char* msg) {
-  mju::strcpy_arr(warningtext, msg);
+  if (local_warningtext_ptr) {
+    *local_warningtext_ptr = msg;
+  } else {
+    mju::strcpy_arr(warningtext, msg);
+  }
 }
 
 
 // compiler
-mjModel* mjCModel::Compile(const mjVFS* vfs) {
+mjModel* mjCModel::Compile(const mjVFS* vfs, mjModel** m) {
   if (compiled) {
     // clear kinematic tree
-    for (int i=0; i<bodies.size(); i++) {
-      bodies[i]->subtreedofs = 0;
+    for (int i=0; i<bodies_.size(); i++) {
+      bodies_[i]->subtreedofs = 0;
     }
-    mjCBody* world = bodies[0];
+    mjCBody* world = bodies_[0];
+    ResetTreeLists();
     Clear();
-    bodies.push_back(world);
+    bodies_.push_back(world);
   }
 
   CopyFromSpec();
@@ -2991,7 +3510,7 @@ mjModel* mjCModel::Compile(const mjVFS* vfs) {
   // setjmp returns, and therefore to pass nullptr directly to the
   // mj_deleteModel and mj_deleteData calls in the subsequent catch block,
   // without ever reading the actual pointer values.
-  mjModel* volatile m = nullptr;
+  mjModel* volatile model = (m && *m) ? *m : nullptr;
   mjData* volatile data = nullptr;
 
   // save error and warning handlers
@@ -3005,22 +3524,26 @@ mjModel* mjCModel::Compile(const mjVFS* vfs) {
   errInfo = mjCError();
   warningtext[0] = 0;
 
-  // init random number generator, to make textures reproducible
-  srand(123);
-
   try {
     if (setjmp(error_jmp_buf) != 0) {
       // TryCompile resulted in an mju_error which was converted to a longjmp.
-      throw mjCError(0, "engine error: %s", errortext);
+      std::string error_msg = errortext;
+      // also include the last warning that was issued. this is useful for
+      // warnings that came out of plugin implementations.
+      if (warningtext[0]) {
+        error_msg += "\n";
+        error_msg += warningtext;
+      }
+      throw mjCError(0, "engine error: %s", error_msg.c_str());
     }
-    TryCompile(*const_cast<mjModel**>(&m), *const_cast<mjData**>(&data), vfs);
+    TryCompile(*const_cast<mjModel**>(&model), *const_cast<mjData**>(&data), vfs);
   } catch (mjCError err) {
     // deallocate everything allocated in Compile
-    mj_deleteModel(m);
+    mj_deleteModel(model);
     mj_deleteData(data);
-    mjCBody* world = bodies[0];
+    mjCBody* world = bodies_[0];
     Clear();
-    bodies.push_back(world);
+    bodies_.push_back(world);
 
     // save error info
     errInfo = err;
@@ -3031,12 +3554,179 @@ mjModel* mjCModel::Compile(const mjVFS* vfs) {
     return nullptr;
   }
 
+  // destroy attached specs
+  for (auto spec : specs_) {
+    mj_deleteSpec(spec);
+  }
+  specs_.clear();
+
   // restore error handler, mark as compiled, return mjModel
   _mjPRIVATE__set_tls_error_fn(save_error);
   _mjPRIVATE__set_tls_warning_fn(save_warning);
   compiled = true;
-  return m;
+  return model;
 }
+
+
+
+// mesh compilation function to be used in threads
+void CompileMesh(mjCMesh* mesh, const mjVFS* vfs, std::exception_ptr& exception,
+                 std::mutex& exception_mutex, std::string* warningtext) {
+  // set warning text buffer to this local thread
+  local_warningtext_ptr = warningtext;
+  auto previous_handler = _mjPRIVATE__get_tls_warning_fn();
+  _mjPRIVATE__set_tls_warning_fn(warninghandler);
+
+  // compile the mesh, catch exception to be rethrown later
+  try {
+    mesh->Compile(vfs);
+  } catch (...) {
+    std::lock_guard<std::mutex> lock(exception_mutex);
+    if (!exception) {
+      exception = std::current_exception();
+    }
+  }
+
+  // restore warning handler to top-level
+  _mjPRIVATE__set_tls_warning_fn(previous_handler);
+  local_warningtext_ptr = nullptr;
+}
+
+
+
+// multi-threaded mesh compilation
+void mjCModel::CompileMeshes(const mjVFS* vfs) {
+  std::vector<std::thread> threads;
+  int nmesh = meshes_.size();
+  int hardware_threads = std::thread::hardware_concurrency() / 2;
+  int maxthread = std::min(nmesh, std::min(kMaxCompilerThreads, hardware_threads));
+  int nthread = std::max(1, maxthread);
+
+  threads.reserve(nthread);
+
+  // holds an exception thrown by a worker thread
+  std::exception_ptr exception;
+  std::mutex except_mutex;
+
+  std::atomic_int next_mesh = 0;
+  std::vector<std::string> mesh_warningtext(nmesh);
+  for (int i = 0; i < nthread; ++i) {
+    threads.emplace_back([&] {
+      for (int meshid = next_mesh++; meshid < nmesh; meshid = next_mesh++) {
+        auto& mesh = meshes_[meshid];
+        CompileMesh(mesh, vfs, exception, except_mutex,
+                    &mesh_warningtext[meshid]);
+      }
+    });
+  }
+
+  // join threads
+  for (auto& thread : threads) {
+    if (thread.joinable()) {
+      thread.join();
+    }
+  }
+
+  // concatenate all warnings from threads, copy into warningtext
+  std::string concatenated_warnings;
+  bool has_warning = false;
+  for (int i = 0; i < nmesh; i++) {
+    if (!mesh_warningtext[i].empty()) {
+      if (has_warning) {
+        concatenated_warnings += "\n";
+      }
+      concatenated_warnings += mesh_warningtext[i];
+      has_warning = true;
+    }
+  }
+  mju::strcpy_arr(warningtext, concatenated_warnings.c_str());
+
+  // if exception was caught, rethrow it
+  if (exception) {
+    std::rethrow_exception(exception);
+  }
+}
+
+
+
+// convert pending keyframes info to actual keyframes
+void mjCModel::ResolveKeyframes(const mjModel* m) {
+  if (key_pending_.empty()) {
+    return;
+  }
+
+  // store dof offsets in joints and actuators
+  SaveDofOffsets();
+
+  // resize existing keyframes to the new state, fill in missing default values
+  for (unsigned int i = 0; i < nkey - key_pending_.size(); i++) {
+    mjCKey* key = keys_[i];
+    if (!key->spec_qpos_.empty()) {
+      int nq0 = key->spec_qpos_.size();
+      key->spec_qpos_.resize(nq);
+      for (int i=nq0; i<m->nq; i++) {
+        key->spec_qpos_[i] = (double)m->qpos0[i];
+      }
+    }
+    if (!key->spec_qvel_.empty()) {
+      key->spec_qvel_.resize(nv);
+    }
+    if (!key->spec_act_.empty()) {
+      key->spec_act_.resize(na);
+    }
+    if (!key->spec_ctrl_.empty()) {
+      key->spec_ctrl_.resize(nu);
+    }
+    if (!key->spec_mpos_.empty()) {
+      int nmocap0 = key->spec_mpos_.size() / 3;
+      key->spec_mpos_.resize(3*nmocap);
+      for (unsigned int j = 0; j < bodies_.size(); j++) {
+        if (bodies_[j]->mocapid < nmocap0) {
+          continue;
+        }
+        int i = bodies_[j]->mocapid;
+        key->spec_mpos_[3*i+0] = (double)m->body_pos[3*j+0];
+        key->spec_mpos_[3*i+1] = (double)m->body_pos[3*j+1];
+        key->spec_mpos_[3*i+2] = (double)m->body_pos[3*j+2];
+      }
+    }
+    if (!key->spec_mquat_.empty()) {
+      int nmocap0 = key->spec_mquat_.size() / 4;
+      key->spec_mquat_.resize(4*nmocap);
+      for (unsigned int j = 0; j < bodies_.size(); j++) {
+        if (bodies_[j]->mocapid < nmocap0) {
+          continue;
+        }
+        int i = bodies_[j]->mocapid;
+        key->spec_mquat_[4*i+0] = (double)m->body_quat[4*j+0];
+        key->spec_mquat_[4*i+1] = (double)m->body_quat[4*j+1];
+        key->spec_mquat_[4*i+2] = (double)m->body_quat[4*j+2];
+        key->spec_mquat_[4*i+3] = (double)m->body_quat[4*j+3];
+      }
+    }
+  }
+
+  // create new keyframes, fill in missing default values
+  for (const auto& info : key_pending_) {
+    mjCKey* key = (mjCKey*)FindObject(mjOBJ_KEY, info.name);
+    key->name = info.name;
+    key->spec.time = info.time;
+    if (info.qpos) key->spec_qpos_.assign(nq, 0);
+    if (info.qvel) key->spec_qvel_.assign(nv, 0);
+    if (info.act) key->spec_act_.assign(na, 0);
+    if (info.ctrl) key->spec_ctrl_.assign(nu, 0);
+    if (info.mpos) key->spec_mpos_.assign(3*nmocap, 0);
+    if (info.mquat) key->spec_mquat_.assign(4*nmocap, 0);
+    RestoreState(info.name, m->qpos0, m->body_pos, m->body_quat,
+                 key->spec_qpos_.data(), key->spec_qvel_.data(),
+                 key->spec_act_.data(), key->spec_ctrl_.data(),
+                 key->spec_mpos_.data(), key->spec_mquat_.data());
+  }
+
+  // the attached keyframes have been copied into the model
+  key_pending_.clear();
+}
+
 
 
 void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
@@ -3047,12 +3737,12 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
   }
 
   // check for joints in world body
-  if (!bodies[0]->joints.empty()) {
+  if (!bodies_[0]->joints.empty()) {
     throw mjCError(0, "joint found in world body");
   }
 
   // check for too many body+flex
-  if (bodies.size()+flexes.size()>=65534) {
+  if (bodies_.size()+flexes_.size()>=65534) {
     throw mjCError(0, "number of bodies plus flexes must be less than 65534");
   }
 
@@ -3071,39 +3761,46 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
   }
 
   // add missing keyframes
-  for (int i=keys.size(); i<nkey; i++) {
+  for (int i=keys_.size(); i<nkey; i++) {
     AddKey();
   }
 
   // make lists of objects created in kinematic tree
-  MakeLists(bodies[0]);
+  MakeLists(bodies_[0]);
 
   // fill missing names and check that they are all filled
-  SetDefaultNames(meshes);
-  SetDefaultNames(skins);
-  SetDefaultNames(hfields);
-  SetDefaultNames(textures);
+  SetDefaultNames(meshes_);
+  SetDefaultNames(skins_);
+  SetDefaultNames(hfields_);
+  SetDefaultNames(textures_);
   CheckEmptyNames();
+
+  // create pending keyframes
+  for (const auto& info : key_pending_) {
+    mjCKey* key = AddKey();
+    key->name = info.name;
+  }
 
   // set object ids, check for repeated names
   ProcessLists();
 
   // delete visual assets
   if (discardvisual) {
-    DeleteAll(materials);
-    DeleteTexcoord(flexes);
-    DeleteTexcoord(meshes);
-    DeleteAll(textures);
+    DeleteAll(materials_);
+    DeleteTexcoord(flexes_);
+    DeleteTexcoord(meshes_);
+    DeleteAll(textures_);
   }
 
   // map names to asset references
   IndexAssets(/*discard=*/false);
 
   // mark meshes that need convex hull
-  for (int i=0; i<geoms.size(); i++) {
-    if (geoms[i]->mesh && geoms[i]->spec.type==mjGEOM_MESH &&
-        (geoms[i]->spec.contype || geoms[i]->spec.conaffinity)) {
-      geoms[i]->mesh->set_needhull(true);
+  for (int i=0; i<geoms_.size(); i++) {
+    if (geoms_[i]->mesh &&
+        (geoms_[i]->spec.type==mjGEOM_MESH || geoms_[i]->spec.type==mjGEOM_SDF) &&
+        (geoms_[i]->spec.contype || geoms_[i]->spec.conaffinity)) {
+      geoms_[i]->mesh->SetNeedHull(true);
     }
   }
 
@@ -3111,42 +3808,48 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
   SetNuser();
 
   // compile meshes (needed for geom compilation)
-  for (int i=0; i<meshes.size(); i++) {
-    meshes[i]->Compile(vfs);
+  if (usethread && meshes_.size() > 1) {
+    // multi-threaded mesh compile
+    CompileMeshes(vfs);
+  } else {
+    // single-threaded mesh compile
+    for (int i=0; i < meshes_.size(); i++) {
+      meshes_[i]->Compile(vfs);
+    }
   }
 
   // compile objects in kinematic tree
-  for (int i=0; i<bodies.size(); i++) {
-    bodies[i]->Compile();  // also compiles joints, geoms, sites, cameras, lights
+  for (int i=0; i<bodies_.size(); i++) {
+    bodies_[i]->Compile();  // also compiles joints, geoms, sites, cameras, lights, frames
   }
 
   // compile all other objects except for keyframes
-  for (int i=0; i<flexes.size(); i++) flexes[i]->Compile(vfs);
-  for (int i=0; i<skins.size(); i++) skins[i]->Compile(vfs);
-  for (int i=0; i<hfields.size(); i++) hfields[i]->Compile(vfs);
-  for (int i=0; i<textures.size(); i++) textures[i]->Compile(vfs);
-  for (int i=0; i<materials.size(); i++) materials[i]->Compile();
-  for (int i=0; i<pairs.size(); i++) pairs[i]->Compile();
-  for (int i=0; i<excludes.size(); i++) excludes[i]->Compile();
-  for (int i=0; i<equalities.size(); i++) equalities[i]->Compile();
-  for (int i=0; i<tendons.size(); i++) tendons[i]->Compile();
-  for (int i=0; i<actuators.size(); i++) actuators[i]->Compile();
-  for (int i=0; i<sensors.size(); i++) sensors[i]->Compile();
-  for (int i=0; i<numerics.size(); i++) numerics[i]->Compile();
-  for (int i=0; i<texts.size(); i++) texts[i]->Compile();
-  for (int i=0; i<tuples.size(); i++) tuples[i]->Compile();
-  for (int i=0; i<plugins.size(); i++) plugins[i]->Compile();
+  for (auto flex : flexes_) flex->Compile(vfs);
+  for (auto skin : skins_) skin->Compile(vfs);
+  for (auto hfield : hfields_) hfield->Compile(vfs);
+  for (auto texture : textures_) texture->Compile(vfs);
+  for (auto material : materials_) material->Compile();
+  for (auto pair : pairs_) pair->Compile();
+  for (auto exclude : excludes_) exclude->Compile();
+  for (auto equality : equalities_) equality->Compile();
+  for (auto tendon : tendons_) tendon->Compile();
+  for (auto actuator : actuators_) actuator->Compile();
+  for (auto sensor : sensors_) sensor->Compile();
+  for (auto numeric : numerics_) numeric->Compile();
+  for (auto text : texts_) text->Compile();
+  for (auto tuple : tuples_) tuple->Compile();
+  for (auto plugin : plugins_) plugin->Compile();
 
-  // compile defaults: to enforce userdata length for writer
-  for (int i=0; i<defaults.size(); i++) {
-    defaults[i]->Compile(this);
+  // compile def: to enforce userdata length for writer
+  for (mjCDef* def : defaults_) {
+    def->Compile(this);
   }
 
   // sort pair, exclude in increasing signature order; reassign ids
-  std::stable_sort(pairs.begin(), pairs.end(), comparePair);
-  std::stable_sort(excludes.begin(), excludes.end(), compareBodyPair);
-  reassignid(pairs);
-  reassignid(excludes);
+  std::stable_sort(pairs_.begin(), pairs_.end(), comparePair);
+  std::stable_sort(excludes_.begin(), excludes_.end(), compareBodyPair);
+  reassignid(pairs_);
+  reassignid(excludes_);
 
   // resolve asset references, compute sizes
   IndexAssets(discardvisual);
@@ -3157,18 +3860,18 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
   }
 
   // set nmocap and body.mocapid
-  for (int i=0; i<bodies.size(); i++) {
-    if (bodies[i]->mocap) {
-      bodies[i]->mocapid = nmocap;
+  for (mjCBody* body : bodies_) {
+    if (body->mocap) {
+      body->mocapid = nmocap;
       nmocap++;
     } else {
-      bodies[i]->mocapid = -1;
+      body->mocapid = -1;
     }
   }
 
   // check body mass and inertia
-  for (int i=1; i<bodies.size(); i++) {
-    mjCBody* b = bodies[i];
+  for (int i=1; i<bodies_.size(); i++) {
+    mjCBody* b = bodies_[i];
 
     // find moving body with small mass or inertia
     if (!b->joints.empty() &&
@@ -3197,16 +3900,17 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
   }
 
   // create low-level model
-  m = mj_makeModel(nq, nv, nu, na, nbody, nbvh, nbvhstatic, nbvhdynamic, njnt, ngeom, nsite,
-                   ncam, nlight, nflex, nflexvert, nflexedge, nflexelem,
-                   nflexelemdata, nflexshelldata, nflexevpair, nflextexcoord,
-                   nmesh, nmeshvert, nmeshnormal, nmeshtexcoord, nmeshface, nmeshgraph,
-                   nskin, nskinvert, nskintexvert, nskinface, nskinbone, nskinbonevert,
-                   nhfield, nhfielddata, ntex, ntexdata, nmat, npair, nexclude,
-                   neq, ntendon, nwrap, nsensor, nnumeric, nnumericdata, ntext, ntextdata,
-                   ntuple, ntupledata, nkey, nmocap, nplugin, npluginattr,
-                   nuser_body, nuser_jnt, nuser_geom, nuser_site, nuser_cam,
-                   nuser_tendon, nuser_actuator, nuser_sensor, nnames, npaths);
+  mj_makeModel(&m,
+               nq, nv, nu, na, nbody, nbvh, nbvhstatic, nbvhdynamic, njnt, ngeom, nsite,
+               ncam, nlight, nflex, nflexvert, nflexedge, nflexelem,
+               nflexelemdata, nflexshelldata, nflexevpair, nflextexcoord,
+               nmesh, nmeshvert, nmeshnormal, nmeshtexcoord, nmeshface, nmeshgraph,
+               nskin, nskinvert, nskintexvert, nskinface, nskinbone, nskinbonevert,
+               nhfield, nhfielddata, ntex, ntexdata, nmat, npair, nexclude,
+               neq, ntendon, nwrap, nsensor, nnumeric, nnumericdata, ntext, ntextdata,
+               ntuple, ntupledata, nkey, nmocap, nplugin, npluginattr,
+               nuser_body, nuser_jnt, nuser_geom, nuser_site, nuser_cam,
+               nuser_tendon, nuser_actuator, nuser_sensor, nnames, npaths);
   if (!m) {
     throw mjCError(0, "could not create mjModel");
   }
@@ -3222,10 +3926,10 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
   {
     int adr = 0;
     for (int i = 0; i < nplugin; ++i) {
-      m->plugin[i] = plugins[i]->spec.plugin_slot;
-      const int size = plugins[i]->flattened_attributes.size();
+      m->plugin[i] = plugins_[i]->spec.plugin_slot;
+      const int size = plugins_[i]->flattened_attributes.size();
       std::memcpy(m->plugin_attr + adr,
-                  plugins[i]->flattened_attributes.data(), size);
+                  plugins_[i]->flattened_attributes.data(), size);
       m->plugin_attradr[i] = adr;
       adr += size;
     }
@@ -3236,8 +3940,8 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
     // set actuator_plugin to the plugin instance ID
     std::vector<std::vector<int>> plugin_to_actuators(nplugin);
     for (int i = 0; i < nu; ++i) {
-      if (actuators[i]->plugin.active) {
-        int actuator_plugin = static_cast<mjCPlugin*>(actuators[i]->plugin.instance)->id;
+      if (actuators_[i]->plugin.active) {
+        int actuator_plugin = static_cast<mjCPlugin*>(actuators_[i]->plugin.instance)->id;
         m->actuator_plugin[i] = actuator_plugin;
         plugin_to_actuators[actuator_plugin].push_back(i);
       } else {
@@ -3246,16 +3950,16 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
     }
 
     for (int i = 0; i < nbody; ++i) {
-      if (bodies[i]->plugin.active) {
-        m->body_plugin[i] = static_cast<mjCPlugin*>(bodies[i]->plugin.instance)->id;
+      if (bodies_[i]->plugin.active) {
+        m->body_plugin[i] = static_cast<mjCPlugin*>(bodies_[i]->plugin.instance)->id;
       } else {
         m->body_plugin[i] = -1;
       }
     }
 
     for (int i = 0; i < ngeom; ++i) {
-      if (geoms[i]->plugin.active) {
-        m->geom_plugin[i] = static_cast<mjCPlugin*>(geoms[i]->plugin.instance)->id;
+      if (geoms_[i]->plugin.active) {
+        m->geom_plugin[i] = static_cast<mjCPlugin*>(geoms_[i]->plugin.instance)->id;
       } else {
         m->geom_plugin[i] = -1;
       }
@@ -3263,8 +3967,8 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
 
     std::vector<std::vector<int>> plugin_to_sensors(nplugin);
     for (int i = 0; i < nsensor; ++i) {
-      if (sensors[i]->type == mjSENS_PLUGIN) {
-        int sensor_plugin = static_cast<mjCPlugin*>(sensors[i]->plugin.instance)->id;
+      if (sensors_[i]->type == mjSENS_PLUGIN) {
+        int sensor_plugin = static_cast<mjCPlugin*>(sensors_[i]->plugin.instance)->id;
         m->sensor_plugin[i] = sensor_plugin;
         plugin_to_sensors[sensor_plugin].push_back(i);
       } else {
@@ -3290,17 +3994,10 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
             mju_error("`nsensordata` is null for plugin at slot %d", m->plugin[i]);
           }
           int nsensordata = plugin->nsensordata(m, i, sensor_id);
-          sensors[sensor_id]->dim = nsensordata;
-          sensors[sensor_id]->needstage =
+          sensors_[sensor_id]->dim = nsensordata;
+          sensors_[sensor_id]->needstage =
               static_cast<mjtStage>(plugin->needstage);
           this->nsensordata += nsensordata;
-        }
-      }
-      if ((plugin->capabilityflags & mjPLUGIN_ACTUATOR) && plugin->actuator_actdim) {
-        for (int actuator_id : plugin_to_actuators[i]) {
-          int plugin_actdim = plugin->actuator_actdim(m, i, actuator_id);
-          actuators[actuator_id]->plugin_actdim = plugin_actdim;
-          this->na += plugin_actdim;
         }
       }
     }
@@ -3308,8 +4005,10 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
   }
 
   // keyframe compilation needs access to nq, nv, na, nmocap, qpos0
-  for (int i=0; i<keys.size(); i++) {
-    keys[i]->Compile(m);
+  ResolveKeyframes(m);
+
+  for (int i=0; i<keys_.size(); i++) {
+    keys_[i]->Compile(m);
   }
 
   // copy objects outsite kinematic tree (including keyframes)
@@ -3358,7 +4057,7 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
   // create data
   int disableflags = m->opt.disableflags;
   m->opt.disableflags |= mjDSBL_CONTACT;
-  d = mj_makeRawData(m);
+  mj_makeRawData(&d, m);
   if (!d) {
     mj_deleteModel(m);
     throw mjCError(0, "could not create mjData");
@@ -3384,14 +4083,14 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
   meaninertia_auto = m->stat.meaninertia;
   meanmass_auto = m->stat.meanmass;
   meansize_auto = m->stat.meansize;
-  copyvec(center_auto, m->stat.center, 3);
+  mjuu_copyvec(center_auto, m->stat.center, 3);
 
   // override model statistics if defined by user
   if (mjuu_defined(stat.extent)) m->stat.extent = (mjtNum)stat.extent;
   if (mjuu_defined(stat.meaninertia)) m->stat.meaninertia = (mjtNum)stat.meaninertia;
   if (mjuu_defined(stat.meanmass)) m->stat.meanmass = (mjtNum)stat.meanmass;
   if (mjuu_defined(stat.meansize)) m->stat.meansize = (mjtNum)stat.meansize;
-  if (mjuu_defined(stat.center[0])) copyvec(m->stat.center, stat.center, 3);
+  if (mjuu_defined(stat.center[0])) mjuu_copyvec(m->stat.center, stat.center, 3);
 
   // assert that model has valid references
   const char* validationerr = mj_validateReferences(m);
@@ -3451,7 +4150,7 @@ bool mjCModel::CopyBack(const mjModel* m) {
       nmat != m->nmat || ntex != m->ntex || npair!=m->npair || nexclude!=m->nexclude ||
       neq!=m->neq || ntendon!=m->ntendon || nwrap!=m->nwrap || nsensor!=m->nsensor ||
       nnumeric!=m->nnumeric || nnumericdata!=m->nnumericdata || ntext!=m->ntext ||
-      ntextdata!=m->ntextdata || nnames!=m->nnames || nM!=m->nM || nD!=m->nD ||
+      ntextdata!=m->ntextdata || nnames!=m->nnames || nM!=m->nM || nD!=m->nD || nC!=m->nC ||
       nB!=m->nB || nemax!=m->nemax || nconmax!=m->nconmax || njmax!=m->njmax ||
       npaths!=m->npaths) {
     errInfo = mjCError(0, "incompatible models in CopyBack");
@@ -3470,21 +4169,21 @@ bool mjCModel::CopyBack(const mjModel* m) {
   if (m->stat.center[0] != center_auto[0] ||
       m->stat.center[1] != center_auto[1] ||
       m->stat.center[2] != center_auto[2]) {
-    mju_copy3(stat.center, m->stat.center);
+    mjuu_copyvec(stat.center, m->stat.center, 3);
   }
 
   // qpos0, qpos_spring
   for (int i=0; i<njnt; i++) {
-    switch (joints[i]->type) {
+    switch (joints_[i]->type) {
     case mjJNT_FREE:
-      copyvec(bodies[m->jnt_bodyid[i]]->pos, m->qpos0+m->jnt_qposadr[i], 3);
-      copyvec(bodies[m->jnt_bodyid[i]]->quat, m->qpos0+m->jnt_qposadr[i]+3, 4);
+      mjuu_copyvec(bodies_[m->jnt_bodyid[i]]->pos, m->qpos0+m->jnt_qposadr[i], 3);
+      mjuu_copyvec(bodies_[m->jnt_bodyid[i]]->quat, m->qpos0+m->jnt_qposadr[i]+3, 4);
       break;
 
     case mjJNT_SLIDE:
     case mjJNT_HINGE:
-      joints[i]->ref = (double)m->qpos0[m->jnt_qposadr[i]];
-      joints[i]->springref = (double)m->qpos_spring[m->jnt_qposadr[i]];
+      joints_[i]->ref = (double)m->qpos0[m->jnt_qposadr[i]];
+      joints_[i]->springref = (double)m->qpos_spring[m->jnt_qposadr[i]];
       break;
 
     case mjJNT_BALL:
@@ -3492,47 +4191,47 @@ bool mjCModel::CopyBack(const mjModel* m) {
       break;
     }
   }
-  mju_copy(qpos0.data(), m->qpos0, m->nq);
+  mjuu_copyvec(qpos0.data(), m->qpos0, m->nq);
 
   // body
   mjCBody* pb;
   for (int i=0; i<nbody; i++) {
-    pb = bodies[i];
+    pb = bodies_[i];
 
-    copyvec(pb->pos, m->body_pos+3*i, 3);
-    copyvec(pb->quat, m->body_quat+4*i, 4);
-    copyvec(pb->ipos, m->body_ipos+3*i, 3);
-    copyvec(pb->iquat, m->body_iquat+4*i, 4);
+    mjuu_copyvec(pb->pos, m->body_pos+3*i, 3);
+    mjuu_copyvec(pb->quat, m->body_quat+4*i, 4);
+    mjuu_copyvec(pb->ipos, m->body_ipos+3*i, 3);
+    mjuu_copyvec(pb->iquat, m->body_iquat+4*i, 4);
     pb->mass = (double)m->body_mass[i];
-    copyvec(pb->inertia, m->body_inertia+3*i, 3);
+    mjuu_copyvec(pb->inertia, m->body_inertia+3*i, 3);
 
     if (nuser_body) {
-      copyvec(pb->userdata_.data(), m->body_user + nuser_body*i, nuser_body);
+      mjuu_copyvec(pb->userdata_.data(), m->body_user + nuser_body*i, nuser_body);
     }
   }
 
   // joint and dof
   mjCJoint* pj;
   for (int i=0; i<njnt; i++) {
-    pj = joints[i];
+    pj = joints_[i];
 
     // joint data
-    copyvec(pj->pos, m->jnt_pos+3*i, 3);
-    copyvec(pj->axis, m->jnt_axis+3*i, 3);
+    mjuu_copyvec(pj->pos, m->jnt_pos+3*i, 3);
+    mjuu_copyvec(pj->axis, m->jnt_axis+3*i, 3);
     pj->stiffness = (double)m->jnt_stiffness[i];
-    copyvec(pj->range, m->jnt_range+2*i, 2);
-    copyvec(pj->solref_limit, m->jnt_solref+mjNREF*i, mjNREF);
-    copyvec(pj->solimp_limit, m->jnt_solimp+mjNIMP*i, mjNIMP);
+    mjuu_copyvec(pj->range, m->jnt_range+2*i, 2);
+    mjuu_copyvec(pj->solref_limit, m->jnt_solref+mjNREF*i, mjNREF);
+    mjuu_copyvec(pj->solimp_limit, m->jnt_solimp+mjNIMP*i, mjNIMP);
     pj->margin = (double)m->jnt_margin[i];
 
     if (nuser_jnt) {
-      copyvec(pj->userdata_.data(), m->jnt_user + nuser_jnt*i, nuser_jnt);
+      mjuu_copyvec(pj->userdata_.data(), m->jnt_user + nuser_jnt*i, nuser_jnt);
     }
 
     // dof data
     int j = m->jnt_dofadr[i];
-    copyvec(pj->solref_friction, m->dof_solref+mjNREF*j, mjNREF);
-    copyvec(pj->solimp_friction, m->dof_solimp+mjNIMP*j, mjNIMP);
+    mjuu_copyvec(pj->solref_friction, m->dof_solref+mjNREF*j, mjNREF);
+    mjuu_copyvec(pj->solimp_friction, m->dof_solimp+mjNIMP*j, mjNIMP);
     pj->armature = (double)m->dof_armature[j];
     pj->damping = (double)m->dof_damping[j];
     pj->frictionloss = (double)m->dof_frictionloss[j];
@@ -3541,36 +4240,36 @@ bool mjCModel::CopyBack(const mjModel* m) {
   // geom
   mjCGeom* pg;
   for (int i=0; i<ngeom; i++) {
-    pg = geoms[i];
+    pg = geoms_[i];
 
-    copyvec(pg->size, m->geom_size+3*i, 3);
-    copyvec(pg->pos, m->geom_pos+3*i, 3);
-    copyvec(pg->quat, m->geom_quat+4*i, 4);
-    copyvec(pg->friction, m->geom_friction+3*i, 3);
-    copyvec(pg->solref, m->geom_solref+mjNREF*i, mjNREF);
-    copyvec(pg->solimp, m->geom_solimp+mjNIMP*i, mjNIMP);
-    copyvec(pg->rgba, m->geom_rgba+4*i, 4);
+    mjuu_copyvec(pg->size, m->geom_size+3*i, 3);
+    mjuu_copyvec(pg->pos, m->geom_pos+3*i, 3);
+    mjuu_copyvec(pg->quat, m->geom_quat+4*i, 4);
+    mjuu_copyvec(pg->friction, m->geom_friction+3*i, 3);
+    mjuu_copyvec(pg->solref, m->geom_solref+mjNREF*i, mjNREF);
+    mjuu_copyvec(pg->solimp, m->geom_solimp+mjNIMP*i, mjNIMP);
+    mjuu_copyvec(pg->rgba, m->geom_rgba+4*i, 4);
     pg->solmix = (double)m->geom_solmix[i];
     pg->margin = (double)m->geom_margin[i];
     pg->gap = (double)m->geom_gap[i];
 
     if (nuser_geom) {
-      copyvec(pg->userdata_.data(), m->geom_user + nuser_geom*i, nuser_geom);
+      mjuu_copyvec(pg->userdata_.data(), m->geom_user + nuser_geom*i, nuser_geom);
     }
   }
 
   // mesh
   mjCMesh* pm;
   for (int i=0; i<nmesh; i++) {
-    pm = meshes[i];
-    copyvec(pm->GetOffsetPosPtr(), m->mesh_pos+3*i, 3);
-    copyvec(pm->GetOffsetQuatPtr(), m->mesh_quat+4*i, 4);
+    pm = meshes_[i];
+    mjuu_copyvec(pm->GetOffsetPosPtr(), m->mesh_pos+3*i, 3);
+    mjuu_copyvec(pm->GetOffsetQuatPtr(), m->mesh_quat+4*i, 4);
   }
 
   // heightfield
   mjCHField* phf;
   for (int i=0; i<nhfield; i++) {
-    phf = hfields[i];
+    phf = hfields_[i];
     int size = phf->get_userdata().size();
     if (size) {
       int nrow = m->hfield_nrow[i];
@@ -3580,155 +4279,155 @@ bool mjCModel::CopyBack(const mjModel* m) {
       // copy back in reverse row order
       for (int j=0; j<nrow; j++) {
         int flip = nrow-1-j;
-        copyvec(userdata + flip*ncol, modeldata+j*ncol, ncol);
+        mjuu_copyvec(userdata + flip*ncol, modeldata+j*ncol, ncol);
       }
     }
   }
 
   // sites
   for (int i=0; i<nsite; i++) {
-    copyvec(sites[i]->size, m->site_size + 3 * i, 3);
-    copyvec(sites[i]->pos, m->site_pos+3*i, 3);
-    copyvec(sites[i]->quat, m->site_quat+4*i, 4);
-    copyvec(sites[i]->rgba, m->site_rgba+4*i, 4);
+    mjuu_copyvec(sites_[i]->size, m->site_size + 3 * i, 3);
+    mjuu_copyvec(sites_[i]->pos, m->site_pos+3*i, 3);
+    mjuu_copyvec(sites_[i]->quat, m->site_quat+4*i, 4);
+    mjuu_copyvec(sites_[i]->rgba, m->site_rgba+4*i, 4);
 
     if (nuser_site) {
-      copyvec(sites[i]->userdata_.data(), m->site_user + nuser_site*i, nuser_site);
+      mjuu_copyvec(sites_[i]->userdata_.data(), m->site_user + nuser_site*i, nuser_site);
     }
   }
 
   // cameras
   for (int i=0; i<ncam; i++) {
-    copyvec(cameras[i]->pos, m->cam_pos+3*i, 3);
-    copyvec(cameras[i]->quat, m->cam_quat+4*i, 4);
-    cameras[i]->fovy = (double)m->cam_fovy[i];
-    cameras[i]->ipd = (double)m->cam_ipd[i];
-    copyvec(cameras[i]->resolution, m->cam_resolution+2*i, 2);
-    copyvec(cameras[i]->intrinsic, m->cam_intrinsic+4*i, 4);
+    mjuu_copyvec(cameras_[i]->pos, m->cam_pos+3*i, 3);
+    mjuu_copyvec(cameras_[i]->quat, m->cam_quat+4*i, 4);
+    cameras_[i]->fovy = (double)m->cam_fovy[i];
+    cameras_[i]->ipd = (double)m->cam_ipd[i];
+    mjuu_copyvec(cameras_[i]->resolution, m->cam_resolution+2*i, 2);
+    mjuu_copyvec(cameras_[i]->intrinsic, m->cam_intrinsic+4*i, 4);
 
     if (nuser_cam) {
-      copyvec(cameras[i]->userdata_.data(), m->cam_user + nuser_cam*i, nuser_cam);
+      mjuu_copyvec(cameras_[i]->userdata_.data(), m->cam_user + nuser_cam*i, nuser_cam);
     }
   }
 
   // lights
   for (int i=0; i<nlight; i++) {
-    copyvec(lights[i]->pos, m->light_pos+3*i, 3);
-    copyvec(lights[i]->dir, m->light_dir+3*i, 3);
-    copyvec(lights[i]->attenuation, m->light_attenuation+3*i, 3);
-    lights[i]->cutoff = m->light_cutoff[i];
-    lights[i]->exponent = m->light_exponent[i];
-    copyvec(lights[i]->ambient, m->light_ambient+3*i, 3);
-    copyvec(lights[i]->diffuse, m->light_diffuse+3*i, 3);
-    copyvec(lights[i]->specular, m->light_specular+3*i, 3);
+    mjuu_copyvec(lights_[i]->pos, m->light_pos+3*i, 3);
+    mjuu_copyvec(lights_[i]->dir, m->light_dir+3*i, 3);
+    mjuu_copyvec(lights_[i]->attenuation, m->light_attenuation+3*i, 3);
+    lights_[i]->cutoff = m->light_cutoff[i];
+    lights_[i]->exponent = m->light_exponent[i];
+    mjuu_copyvec(lights_[i]->ambient, m->light_ambient+3*i, 3);
+    mjuu_copyvec(lights_[i]->diffuse, m->light_diffuse+3*i, 3);
+    mjuu_copyvec(lights_[i]->specular, m->light_specular+3*i, 3);
   }
 
   // materials
   for (int i=0; i<nmat; i++) {
-    copyvec(materials[i]->texrepeat, m->mat_texrepeat+2*i, 2);
-    materials[i]->emission = m->mat_emission[i];
-    materials[i]->specular = m->mat_specular[i];
-    materials[i]->shininess = m->mat_shininess[i];
-    materials[i]->reflectance = m->mat_reflectance[i];
-    copyvec(materials[i]->rgba, m->mat_rgba+4*i, 4);
+    mjuu_copyvec(materials_[i]->texrepeat, m->mat_texrepeat+2*i, 2);
+    materials_[i]->emission = m->mat_emission[i];
+    materials_[i]->specular = m->mat_specular[i];
+    materials_[i]->shininess = m->mat_shininess[i];
+    materials_[i]->reflectance = m->mat_reflectance[i];
+    mjuu_copyvec(materials_[i]->rgba, m->mat_rgba+4*i, 4);
   }
 
   // pairs
   for (int i=0; i<npair; i++) {
-    copyvec(pairs[i]->solref, m->pair_solref+mjNREF*i, mjNREF);
-    copyvec(pairs[i]->solreffriction, m->pair_solreffriction+mjNREF*i, mjNREF);
-    copyvec(pairs[i]->solimp, m->pair_solimp+mjNIMP*i, mjNIMP);
-    pairs[i]->margin = (double)m->pair_margin[i];
-    pairs[i]->gap = (double)m->pair_gap[i];
-    copyvec(pairs[i]->friction, m->pair_friction+5*i, 5);
+    mjuu_copyvec(pairs_[i]->solref, m->pair_solref+mjNREF*i, mjNREF);
+    mjuu_copyvec(pairs_[i]->solreffriction, m->pair_solreffriction+mjNREF*i, mjNREF);
+    mjuu_copyvec(pairs_[i]->solimp, m->pair_solimp+mjNIMP*i, mjNIMP);
+    pairs_[i]->margin = (double)m->pair_margin[i];
+    pairs_[i]->gap = (double)m->pair_gap[i];
+    mjuu_copyvec(pairs_[i]->friction, m->pair_friction+5*i, 5);
   }
 
   // equality constraints
   for (int i=0; i<neq; i++) {
-    copyvec(equalities[i]->data, m->eq_data+mjNEQDATA*i, mjNEQDATA);
-    copyvec(equalities[i]->solref, m->eq_solref+mjNREF*i, mjNREF);
-    copyvec(equalities[i]->solimp, m->eq_solimp+mjNIMP*i, mjNIMP);
+    mjuu_copyvec(equalities_[i]->data, m->eq_data+mjNEQDATA*i, mjNEQDATA);
+    mjuu_copyvec(equalities_[i]->solref, m->eq_solref+mjNREF*i, mjNREF);
+    mjuu_copyvec(equalities_[i]->solimp, m->eq_solimp+mjNIMP*i, mjNIMP);
   }
 
   // tendons
   for (int i=0; i<ntendon; i++) {
-    copyvec(tendons[i]->range, m->tendon_range+2*i, 2);
-    copyvec(tendons[i]->solref_limit, m->tendon_solref_lim+mjNREF*i, mjNREF);
-    copyvec(tendons[i]->solimp_limit, m->tendon_solimp_lim+mjNIMP*i, mjNIMP);
-    copyvec(tendons[i]->solref_friction, m->tendon_solref_fri+mjNREF*i, mjNREF);
-    copyvec(tendons[i]->solimp_friction, m->tendon_solimp_fri+mjNIMP*i, mjNIMP);
-    copyvec(tendons[i]->rgba, m->tendon_rgba+4*i, 4);
-    tendons[i]->width = (double)m->tendon_width[i];
-    tendons[i]->margin = (double)m->tendon_margin[i];
-    tendons[i]->stiffness = (double)m->tendon_stiffness[i];
-    tendons[i]->damping = (double)m->tendon_damping[i];
-    tendons[i]->frictionloss = (double)m->tendon_frictionloss[i];
+    mjuu_copyvec(tendons_[i]->range, m->tendon_range+2*i, 2);
+    mjuu_copyvec(tendons_[i]->solref_limit, m->tendon_solref_lim+mjNREF*i, mjNREF);
+    mjuu_copyvec(tendons_[i]->solimp_limit, m->tendon_solimp_lim+mjNIMP*i, mjNIMP);
+    mjuu_copyvec(tendons_[i]->solref_friction, m->tendon_solref_fri+mjNREF*i, mjNREF);
+    mjuu_copyvec(tendons_[i]->solimp_friction, m->tendon_solimp_fri+mjNIMP*i, mjNIMP);
+    mjuu_copyvec(tendons_[i]->rgba, m->tendon_rgba+4*i, 4);
+    tendons_[i]->width = (double)m->tendon_width[i];
+    tendons_[i]->margin = (double)m->tendon_margin[i];
+    tendons_[i]->stiffness = (double)m->tendon_stiffness[i];
+    tendons_[i]->damping = (double)m->tendon_damping[i];
+    tendons_[i]->frictionloss = (double)m->tendon_frictionloss[i];
 
     if (nuser_tendon) {
-      copyvec(tendons[i]->userdata_.data(), m->tendon_user + nuser_tendon*i, nuser_tendon);
+      mjuu_copyvec(tendons_[i]->userdata_.data(), m->tendon_user + nuser_tendon*i, nuser_tendon);
     }
   }
 
   // actuators
   mjCActuator* pa;
   for (int i=0; i<nu; i++) {
-    pa = actuators[i];
+    pa = actuators_[i];
 
-    copyvec(pa->dynprm, m->actuator_dynprm+i*mjNDYN, mjNDYN);
-    copyvec(pa->gainprm, m->actuator_gainprm+i*mjNGAIN, mjNGAIN);
-    copyvec(pa->biasprm, m->actuator_biasprm+i*mjNBIAS, mjNBIAS);
-    copyvec(pa->ctrlrange, m->actuator_ctrlrange+2*i, 2);
-    copyvec(pa->forcerange, m->actuator_forcerange+2*i, 2);
-    copyvec(pa->actrange, m->actuator_actrange+2*i, 2);
-    copyvec(pa->lengthrange, m->actuator_lengthrange+2*i, 2);
-    copyvec(pa->gear, m->actuator_gear+6*i, 6);
+    mjuu_copyvec(pa->dynprm, m->actuator_dynprm+i*mjNDYN, mjNDYN);
+    mjuu_copyvec(pa->gainprm, m->actuator_gainprm+i*mjNGAIN, mjNGAIN);
+    mjuu_copyvec(pa->biasprm, m->actuator_biasprm+i*mjNBIAS, mjNBIAS);
+    mjuu_copyvec(pa->ctrlrange, m->actuator_ctrlrange+2*i, 2);
+    mjuu_copyvec(pa->forcerange, m->actuator_forcerange+2*i, 2);
+    mjuu_copyvec(pa->actrange, m->actuator_actrange+2*i, 2);
+    mjuu_copyvec(pa->lengthrange, m->actuator_lengthrange+2*i, 2);
+    mjuu_copyvec(pa->gear, m->actuator_gear+6*i, 6);
     pa->cranklength = (double)m->actuator_cranklength[i];
 
     if (nuser_actuator) {
-      copyvec(pa->userdata_.data(), m->actuator_user + nuser_actuator*i, nuser_actuator);
+      mjuu_copyvec(pa->userdata_.data(), m->actuator_user + nuser_actuator*i, nuser_actuator);
     }
   }
 
   // sensors
   for (int i=0; i<nsensor; i++) {
-    sensors[i]->cutoff = (double)m->sensor_cutoff[i];
-    sensors[i]->noise = (double)m->sensor_noise[i];
+    sensors_[i]->cutoff = (double)m->sensor_cutoff[i];
+    sensors_[i]->noise = (double)m->sensor_noise[i];
 
     if (nuser_sensor) {
-      copyvec(sensors[i]->userdata_.data(), m->sensor_user + nuser_sensor*i, nuser_sensor);
+      mjuu_copyvec(sensors_[i]->userdata_.data(), m->sensor_user + nuser_sensor*i, nuser_sensor);
     }
   }
 
   // numeric data
   for (int i=0; i<nnumeric; i++) {
     for (int j=0; j<m->numeric_size[i]; j++) {
-      numerics[i]->data_[j] = (double)m->numeric_data[m->numeric_adr[i]+j];
+      numerics_[i]->data_[j] = (double)m->numeric_data[m->numeric_adr[i]+j];
     }
   }
 
   // tuple data
   for (int i=0; i<ntuple; i++) {
     for (int j=0; j<m->tuple_size[i]; j++) {
-      tuples[i]->objprm_[j] = (double)m->tuple_objprm[m->tuple_adr[i]+j];
+      tuples_[i]->objprm_[j] = (double)m->tuple_objprm[m->tuple_adr[i]+j];
     }
   }
 
   // keyframes
   for (int i=0; i<m->nkey; i++) {
-    mjCKey* pk = keys[i];
+    mjCKey* pk = keys_[i];
 
     pk->time = (double)m->key_time[i];
-    copyvec(pk->qpos_.data(), m->key_qpos + i*nq, nq);
-    copyvec(pk->qvel_.data(), m->key_qvel + i*nv, nv);
+    mjuu_copyvec(pk->qpos_.data(), m->key_qpos + i*nq, nq);
+    mjuu_copyvec(pk->qvel_.data(), m->key_qvel + i*nv, nv);
     if (na) {
-      copyvec(pk->act_.data(), m->key_act + i*na, na);
+      mjuu_copyvec(pk->act_.data(), m->key_act + i*na, na);
     }
     if (nmocap) {
-      copyvec(pk->mpos_.data(), m->key_mpos + i*3*nmocap, 3*nmocap);
-      copyvec(pk->mquat_.data(), m->key_mquat + i*4*nmocap, 4*nmocap);
+      mjuu_copyvec(pk->mpos_.data(), m->key_mpos + i*3*nmocap, 3*nmocap);
+      mjuu_copyvec(pk->mquat_.data(), m->key_mquat + i*4*nmocap, 4*nmocap);
     }
     if (nu) {
-      copyvec(pk->ctrl_.data(), m->key_ctrl + i*nu, nu);
+      mjuu_copyvec(pk->ctrl_.data(), m->key_ctrl + i*nu, nu);
     }
   }
 
@@ -3741,9 +4440,9 @@ void mjCModel::ResolvePlugin(mjCBase* obj, const std::string& plugin_name,
   // (in XML, active plugins are those declared as <required>)
   int plugin_slot = -1;
   if (!plugin_name.empty()) {
-    for (int i = 0; i < active_plugins.size(); ++i) {
-      if (active_plugins[i].first->name == plugin_name) {
-        plugin_slot = active_plugins[i].second;
+    for (int i = 0; i < active_plugins_.size(); ++i) {
+      if (active_plugins_[i].first->name == plugin_name) {
+        plugin_slot = active_plugins_[i].second;
         break;
       }
     }

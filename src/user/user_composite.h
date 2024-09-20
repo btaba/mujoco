@@ -20,7 +20,7 @@
 #include <vector>
 
 #include <mujoco/mjmodel.h>
-#include "user/user_api.h"
+#include <mujoco/mjspec.h>
 #include "user/user_model.h"
 #include "user/user_objects.h"
 
@@ -106,8 +106,7 @@ class mjCComposite {
   // currently used only for cable
   std::string initial;            // root boundary type
   std::vector<float> uservert;    // user-specified vertex positions
-  std::string userface;           // connectivity
-  mjtNum size[3];                 // rope size (meaning depends on the shape)
+  double size[3];                 // rope size (meaning depends on the shape)
   mjtCompShape curve[3];          // geometric shape
 
   // body names used in the skin
@@ -137,7 +136,7 @@ class mjCComposite {
 
  private:
   mjsBody* AddRopeBody(mjCModel* model, mjsBody* body, int ix, int ix1);
-  mjsBody* AddCableBody(mjCModel* model, mjsBody* body, int ix, mjtNum normal[3], mjtNum prev_quat[4]);
+  mjsBody* AddCableBody(mjCModel* model, mjsBody* body, int ix, double normal[3], double prev_quat[4]);
 
   // temporary skin vectors
   void CopyIntoSkin(mjsSkin* skin);

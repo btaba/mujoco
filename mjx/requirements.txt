@@ -66,9 +66,11 @@ scipy==1.11.3; python_version >= '3.9' \
     --hash=sha256:9ea7f579182d83d00fed0e5c11a4aa5ffe01460444219dedc448a36adf0c3917 \
     --hash=sha256:5305792c7110e32ff155aed0df46aa60a60fc6e52cd4ee02cdeb67eaccd5356e \
     --hash=sha256:a63d1ec9cadecce838467ce0631c17c15c7197ae61e49429434ba01d618caa83 \
-    --hash=sha256:715c9966eb8906bc67e450e962bd07a5254420077178f98258904da4004a172f
-setuptools==68.2.2 \
-    --hash=sha256:b454a35605876da60632df1a60f736524eb73cc47bbc9f3f1ef1b644de74fd2a
+    --hash=sha256:715c9966eb8906bc67e450e962bd07a5254420077178f98258904da4004a172f \
+    --hash=sha256:d4d88a6fc091614b842a739b3db6ae15f95c77b308113bd6daefd4b05539b103 \
+    --hash=sha256:cf0dbc4d3fe3107358868a60f263c9d8c2e9ba5de8a934cac4164124f727e6ca
+setuptools==70.3.0 \
+    --hash=sha256:fe384da74336c398e0d956d1cae0669bc02eed936cdb1d49b57de1990dc11ffc
 trimesh==4.0.0 \
     --hash=sha256:c1600e2a1121cff069e89d1403c85c88e49c9dc5b636e96c977a924de432ee50
 wheel==0.41.2 \
@@ -81,8 +83,9 @@ importlib-resources==6.1.0 \
     --hash=sha256:aa50258bbfa56d4e33fbd8aa3ef48ded10d1735f11532b8df95388cc6bdb7e83
 typing_extensions==4.8.0 \
     --hash=sha256:8f92fc8806f9a6b641eaa5318da32b44d401efaac0f6678c9bc448ba3605faa0
-zipp==3.17.0 \
-    --hash=sha256:0e923e726174922dce09c53c59ad483ff7bbb8e572e00c7f7c46b88556409f31
+zipp==3.19.1 \
+    --hash=sha256:2828e64edb5386ea6a52e7ba7cdb17bb30a73a858f5eb6eb93d8d36f5ea26091 \
+    --hash=sha256:35427f6d5594f4acf82d25541438348c26736fa9b3afa2754bcd63cdb99d8e8f
 
 # Transitive dependencies of jax and jaxlib
 importlib-metadata==6.8.0; python_version < '3.10' \
@@ -135,7 +138,8 @@ numpy==1.26.0; python_version >= '3.9' \
     --hash=sha256:914b28d3215e0c721dc75db3ad6d62f51f630cb0c277e6b3bcb39519bed10bd8 \
     --hash=sha256:c78a22e95182fb2e7874712433eaa610478a3caf86f28c621708d35fa4fd6e7f \
     --hash=sha256:86f737708b366c36b76e953c46ba5827d8c27b7a8c9d0f471810728e5a2fe57c \
-    --hash=sha256:020cdbee66ed46b671429c7265cf00d8ac91c046901c55684954c3958525dab2
+    --hash=sha256:020cdbee66ed46b671429c7265cf00d8ac91c046901c55684954c3958525dab2 \
+    --hash=sha256:d6fa6d17727169ff1385ad3cb8f290bbcc3f2097322d90507c1956a4f9f870fc
 opt-einsum==3.3.0 \
     --hash=sha256:2455e59e3947d3c275477df7f5205b30635e266fe6dc300e3d9f9646bfcea147
 

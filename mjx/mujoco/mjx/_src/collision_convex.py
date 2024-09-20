@@ -15,15 +15,66 @@
 """Convex collisions."""
 
 import functools
-from typing import Tuple
+from typing import Callable, Tuple, Union
 
 import jax
 from jax import numpy as jp
 from mujoco.mjx._src import math
+from mujoco.mjx._src import mesh
 # pylint: disable=g-importing-member
-from mujoco.mjx._src.collision_base import Contact
-from mujoco.mjx._src.collision_base import GeomInfo
+from mujoco.mjx._src.collision_types import Collision
+from mujoco.mjx._src.collision_types import ConvexInfo
+from mujoco.mjx._src.collision_types import FunctionKey
+from mujoco.mjx._src.collision_types import GeomInfo
+from mujoco.mjx._src.collision_types import HFieldInfo
+from mujoco.mjx._src.types import Data
+from mujoco.mjx._src.types import GeomType
+from mujoco.mjx._src.types import Model
 # pylint: enable=g-importing-member
+
+_GeomInfo = Union[GeomInfo, ConvexInfo]
+
+
+def collider(ncon: int):
+  """Wraps collision functions for use by collision_driver."""
+
+  def wrapper(collision_fn):
+    def collide(
+        m: Model, d: Data, key: FunctionKey, geom: jax.Array
+    ) -> Collision:
+      g1, g2 = geom.T
+      infos = [
+          GeomInfo(d.geom_xpos[g1], d.geom_xmat[g1], m.geom_size[g1]),
+          GeomInfo(d.geom_xpos[g2], d.geom_xmat[g2], m.geom_size[g2]),
+      ]
+      in_axes = [0, 0]
+      fn = collision_fn
+      for i in [0, 1]:
+        if key.types[i] == GeomType.BOX:
+          infos[i] = mesh.box(infos[i])
+          in_axes[i] = jax.tree_util.tree_map(lambda x: None, infos[i]).replace(
+              pos=0, mat=0, size=0, face=0, vert=0
+          )
+        elif key.types[i] == GeomType.MESH:
+          c, cm = infos[i], m.mesh_convex[key.data_ids[i]]
+          infos[i] = ConvexInfo(**vars(c), **vars(cm))
+          in_axes[i] = jax.tree_util.tree_map(lambda x: None, infos[i]).replace(
+              pos=0, mat=0, size=0
+          )
+        elif key.types[i] == GeomType.HFIELD:
+          hfield_info = mesh.hfield(m, key.data_ids[i])
+          infos[i] = hfield_info.replace(pos=infos[i].pos, mat=infos[i].mat)
+          in_axes[i] = hfield_info.replace(pos=0, mat=0, data=None)
+          fn = functools.partial(fn, subgrid_size=key.subgrid_size)
+      dist, pos, frame = jax.vmap(fn, in_axes=in_axes)(*infos)
+      if ncon > 1:
+        return jax.tree_util.tree_map(jp.concatenate, (dist, pos, frame))
+      return dist, pos, frame
+
+    collide.ncon = ncon
+    return collide
+
+  return wrapper
 
 
 def _closest_segment_point_plane(
@@ -178,7 +229,8 @@ def _manifold_points(
   return jp.array([a_idx, b_idx, c_idx, d_idx])
 
 
-def plane_convex(plane: GeomInfo, convex: GeomInfo) -> Contact:
+@collider(ncon=4)
+def plane_convex(plane: GeomInfo, convex: ConvexInfo) -> Collision:
   """Calculates contacts between a plane and a convex object."""
   vert = convex.vert
 
@@ -186,7 +238,8 @@ def plane_convex(plane: GeomInfo, convex: GeomInfo) -> Contact:
   plane_pos = convex.mat.T @ (plane.pos - convex.pos)
   n = convex.mat.T @ plane.mat[:, 2]
   support = (plane_pos - vert) @ n
-  idx = _manifold_points(vert, support > jp.maximum(0, support.max() - 1e-4), n)
+  # search for manifold points within a 1mm skin depth
+  idx = _manifold_points(vert, support > jp.maximum(0, support.max() - 1e-3), n)
   pos = vert[idx]
 
   # convert to world frame
@@ -200,10 +253,10 @@ def plane_convex(plane: GeomInfo, convex: GeomInfo) -> Contact:
   return dist, pos, frame
 
 
-def sphere_convex(sphere: GeomInfo, convex: GeomInfo) -> Contact:
-  """Calculates contact between a sphere and a convex object."""
+def _sphere_convex(sphere: GeomInfo, convex: ConvexInfo) -> Collision:
+  """Calculates contact between a sphere and a convex mesh."""
   faces = convex.face
-  normals = convex.facenorm
+  normals = convex.face_normal
 
   # Put sphere in convex frame.
   sphere_pos = convex.mat.T @ (sphere.pos - convex.pos)
@@ -233,7 +286,7 @@ def sphere_convex(sphere: GeomInfo, convex: GeomInfo) -> Contact:
       face_normal,
   )
   edge_dist = jax.vmap(
-      lambda plane_pt, plane_norm: (pt - plane_pt).dot(plane_norm)
+      lambda plane_pt, plane_norm, pt=pt: (pt - plane_pt).dot(plane_norm)
   )(edge_p0, side_normals)
   pt_on_face = jp.all(edge_dist <= 0)  # lte to handle degenerate edges
 
@@ -248,7 +301,8 @@ def sphere_convex(sphere: GeomInfo, convex: GeomInfo) -> Contact:
 
   # Get the normal, dist, and contact position.
   pt_normal, d = math.normalize_with_norm(pt - sphere_pos)
-  # Ensure normal points towards convex centroid.
+  # Ensure normal points towards convex centroid. Assume convex centroid is at
+  # the origin.
   inside = jp.dot(pt, pt_normal) > 0
   sign = jp.where(inside, -1, 1)
   n = jp.where(pt_on_face | (d < 1e-6), -face_normal, sign * pt_normal)
@@ -262,16 +316,21 @@ def sphere_convex(sphere: GeomInfo, convex: GeomInfo) -> Contact:
   n = convex.mat @ n
   pos = convex.mat @ pos + convex.pos
 
-  return jax.tree_map(
-      lambda x: jp.expand_dims(x, axis=0), (dist, pos, math.make_frame(n))
-  )
+  return dist, pos, n
 
 
-def capsule_convex(cap: GeomInfo, convex: GeomInfo) -> Contact:
+@collider(ncon=1)
+def sphere_convex(sphere: GeomInfo, convex: ConvexInfo) -> Collision:
+  """Calculates contact between a sphere and a convex mesh."""
+  dist, pos, n = _sphere_convex(sphere, convex)
+  return dist, pos, math.make_frame(n)
+
+
+def _capsule_convex(cap: GeomInfo, convex: ConvexInfo) -> Collision:
   """Calculates contacts between a capsule and a convex object."""
   # Get convex transformed normals, faces, and vertices.
   faces = convex.face
-  normals = convex.facenorm
+  normals = convex.face_normal
 
   # Put capsule in convex frame.
   cap_pos = convex.mat.T @ (cap.pos - convex.pos)
@@ -347,7 +406,7 @@ def capsule_convex(cap: GeomInfo, convex: GeomInfo) -> Contact:
       degenerate_edge_dir,
       edge_closest_pt,
       cap_closest_pt,
-  ) = jax.tree_map(lambda x, i=e_idx: jp.take(x, i, axis=0), res)
+  ) = jax.tree_util.tree_map(lambda x, i=e_idx: jp.take(x, i, axis=0), res)
 
   edge_face_normals = edge_face_normal[e_idx]
   edge_voronoi_front = ((edge_face_normals @ edge_axis) < 0).all()
@@ -389,6 +448,13 @@ def capsule_convex(cap: GeomInfo, convex: GeomInfo) -> Contact:
   dist = -jp.where(
       has_edge_contact, jp.array([edge_penetration, -1]), face_penetration
   )
+  return dist, pos, n
+
+
+@collider(ncon=2)
+def capsule_convex(cap: GeomInfo, convex: ConvexInfo) -> Collision:
+  """Calculates contacts between a capsule and a convex object."""
+  dist, pos, n = _capsule_convex(cap, convex)
   frame = jax.vmap(math.make_frame)(n)
   return dist, pos, frame
 
@@ -809,6 +875,7 @@ def _sat_gaussmap(
       incident_face_norm,
       -best_axis,
   )
+  dist = jp.where(is_face_separating, 1.0, dist)
 
   # Handle edge separating axes by checking all edge pairs.
   a_idx = jp.tile(jp.arange(edges_a.shape[0]), reps=edges_b.shape[0])
@@ -849,8 +916,9 @@ def _sat_gaussmap(
   best_edge_idx = edge_dist.argmax()
   best_edge_dist = edge_dist[best_edge_idx]
   is_edge_contact = jp.where(
-      dist.max() < 0, best_edge_dist > dist.max() - 1e-6,
-      (best_edge_dist < 0) & ~jp.isinf(best_edge_dist)
+      dist.max() < 0.0,
+      best_edge_dist > dist.max() - 1e-6,
+      (best_edge_dist < 0) & ~jp.isinf(best_edge_dist),
   )
   is_edge_contact = is_edge_contact & ~is_face_separating
   normal = jp.where(is_edge_contact, edge_axes[best_edge_idx], normal)
@@ -869,10 +937,46 @@ def _sat_gaussmap(
   return dist, pos, normal
 
 
-def convex_convex(c1: GeomInfo, c2: GeomInfo) -> Contact:
-  """Calculates contacts between two convex objects."""
-  if c1.face is None or c2.face is None or c1.vert is None or c2.vert is None:
-    raise AssertionError('Mesh info missing.')
+def _box_box(b1: ConvexInfo, b2: ConvexInfo) -> Collision:
+  """Calculates contacts between two boxes."""
+  faces1 = b1.face
+  faces2 = b2.face
+
+  to_local_pos = b2.mat.T @ (b1.pos - b2.pos)
+  to_local_mat = b2.mat.T @ b1.mat
+
+  faces1 = to_local_pos + faces1 @ to_local_mat.T
+  normals1 = b1.face_normal @ to_local_mat.T
+  normals2 = b2.face_normal
+
+  vertices1 = to_local_pos + b1.vert @ to_local_mat.T
+  vertices2 = b2.vert
+
+  unique_edges1 = jp.take(vertices1, b1.edge_dir, axis=0)
+  unique_edges2 = jp.take(vertices2, b2.edge_dir, axis=0)
+
+  # brute-force SAT is more performant for box-box
+  dist, pos, normal = _sat_bruteforce(
+      faces1,
+      faces2,
+      vertices1,
+      vertices2,
+      normals1,
+      normals2,
+      unique_edges1,
+      unique_edges2,
+  )
+
+  # Go back to world frame.
+  pos = b2.pos + pos @ b2.mat.T
+  n = normal @ b2.mat.T
+  dist = jp.where(jp.isinf(dist), jp.finfo(float).max, dist)
+
+  return dist, pos, n
+
+
+def _convex_convex(c1: ConvexInfo, c2: ConvexInfo) -> Collision:
+  """Calculates contacts between two convex meshes."""
   # pad face vertices so that we can broadcast between geom1 and geom2
   # face has shape (n_face, n_vert, 3)
   nvert1, nvert2 = c1.face.shape[1], c2.face.shape[1]
@@ -891,18 +995,16 @@ def convex_convex(c1: GeomInfo, c2: GeomInfo) -> Contact:
   faces1 = c1.face
   faces2 = c2.face
 
+  # convert to c2 frame
   to_local_pos = c2.mat.T @ (c1.pos - c2.pos)
   to_local_mat = c2.mat.T @ c1.mat
 
   faces1 = to_local_pos + faces1 @ to_local_mat.T
-  normals1 = c1.facenorm @ to_local_mat.T
-  normals2 = c2.facenorm
+  normals1 = c1.face_normal @ to_local_mat.T
+  normals2 = c2.face_normal
 
   vertices1 = to_local_pos + c1.vert @ to_local_mat.T
   vertices2 = c2.vert
-
-  unique_edges1 = jp.take(vertices1, c1.edge, axis=0)
-  unique_edges2 = jp.take(vertices2, c2.edge, axis=0)
 
   edges1 = jp.take(vertices1, c1.edge, axis=0)
   edges2 = jp.take(vertices2, c2.edge, axis=0)
@@ -910,47 +1012,209 @@ def convex_convex(c1: GeomInfo, c2: GeomInfo) -> Contact:
   edge_face_normals1 = c1.edge_face_normal @ to_local_mat.T
   edge_face_normals2 = c2.edge_face_normal
 
-  enable_bruteforce = (
-      unique_edges1.shape[0] * unique_edges2.shape[0]
-      < edges1[0].shape[0] * edges2[0].shape[0]
+  dist, pos, normal = _sat_gaussmap(
+      to_local_pos,
+      faces1,
+      faces2,
+      vertices1,
+      vertices2,
+      normals1,
+      normals2,
+      edges1,
+      edges2,
+      edge_face_normals1,
+      edge_face_normals2,
   )
-  if enable_bruteforce:
-    dist, pos, normal = _sat_bruteforce(
-        faces1,
-        faces2,
-        vertices1,
-        vertices2,
-        normals1,
-        normals2,
-        unique_edges1,
-        unique_edges2,
-    )
-  else:
-    dist, pos, normal = _sat_gaussmap(
-        to_local_pos,
-        faces1,
-        faces2,
-        vertices1,
-        vertices2,
-        normals1,
-        normals2,
-        edges1,
-        edges2,
-        edge_face_normals1,
-        edge_face_normals2,
-    )
 
   # Go back to world frame.
   pos = c2.pos + pos @ c2.mat.T
-  normal = normal @ c2.mat.T
-  normal = -normal if swapped else normal
+  n = normal @ c2.mat.T
+  n = -n if swapped else n
+  dist = jp.where(jp.isinf(dist), jp.finfo(float).max, dist)
 
-  frame = jax.vmap(math.make_frame)(normal)
+  return dist, pos, n
+
+
+@collider(ncon=4)
+def box_box(b1: ConvexInfo, b2: ConvexInfo) -> Collision:
+  """Calculates contacts between two boxes."""
+  dist, pos, n = _box_box(b1, b2)
+  frame = jax.vmap(math.make_frame)(n)
   return dist, pos, frame
 
 
-# store ncon as function attributes
-plane_convex.ncon = 4
-sphere_convex.ncon = 1
-capsule_convex.ncon = 2
-convex_convex.ncon = 4
+@collider(ncon=4)
+def convex_convex(c1: ConvexInfo, c2: ConvexInfo) -> Collision:
+  """Calculates contacts between two convex objects."""
+  dist, pos, n = _convex_convex(c1, c2)
+  frame = jax.vmap(math.make_frame)(n)
+  return dist, pos, frame
+
+
+def _hfield_collision(
+    collider_fn: Callable[[_GeomInfo, _GeomInfo], Collision],
+    h: HFieldInfo,
+    obj: _GeomInfo,
+    obj_rbound: jax.Array,
+    subgrid_size: Tuple[int, int],
+) -> Collision:
+  """Collides an object with prisms in a height field."""
+  # put obj in hfield frame
+  obj_pos = h.mat.T @ (obj.pos - h.pos)
+  obj_mat = h.mat.T @ obj.mat
+
+  xmin = obj_pos[0] - obj_rbound
+  ymin = obj_pos[1] - obj_rbound
+  cmin = jp.floor((xmin + h.size[0]) / (2 * h.size[0]) * (h.ncol - 1))
+  cmin = cmin.astype(int)
+  rmin = jp.floor((ymin + h.size[1]) / (2 * h.size[1]) * (h.nrow - 1))
+  rmin = rmin.astype(int)
+
+  # compute real-valued grid step
+  dx = 2.0 * h.size[0] / (h.ncol - 1)
+  dy = 2.0 * h.size[1] / (h.nrow - 1)
+
+  # set zbottom value using base size
+  bvert = jp.array([0.0, 0.0, -h.size[3]])
+  bmask = jp.array([True, True, False])
+
+  # process all prisms in sub-grid
+  rs = jp.repeat(jp.arange(subgrid_size[1]), subgrid_size[0])
+  cs = jp.tile(jp.arange(subgrid_size[0]), subgrid_size[1])
+
+  @jax.vmap
+  def make_prisms(r, c):
+    ri, ci = rmin + r, cmin + c
+
+    # ensure ri, ci are in the bounds of the hfield
+    ri = jp.clip(ri, 0, h.nrow - 2)
+    ci = jp.clip(ci, 0, h.ncol - 2)
+
+    p1 = [
+        dx * ci - h.size[0],
+        dy * ri - h.size[1],
+        h.data[ci, ri] * h.size[2],
+    ]
+    p2 = [
+        dx * (ci + 1) - h.size[0],
+        dy * (ri + 1) - h.size[1],
+        h.data[ci + 1, ri + 1] * h.size[2],
+    ]
+    p3 = [
+        dx * ci - h.size[0],
+        dy * (ri + 1) - h.size[1],
+        h.data[ci, ri + 1] * h.size[2],
+    ]
+    top = jp.array([p1, p2, p3])
+    bottom = jp.array([p1, p3, p2]) * bmask + bvert
+    vert = jp.concatenate([bottom, top])
+    prism1 = mesh.hfield_prism(vert)
+
+    p3 = p2
+    p2 = [
+        dx * (ci + 1) - h.size[0],
+        dy * ri - h.size[1],
+        h.data[ci + 1, ri] * h.size[2],
+    ]
+    top = jp.array([p1, p2, p3])
+    bottom = jp.array([p1, p3, p2]) * bmask + bvert
+    vert = jp.concatenate([bottom, top])
+    # NB: If the order of verts is updated above, the corresponding
+    # hfield_prism function must be updated to ensure that all faces have the
+    # correct winding order.
+    prism2 = mesh.hfield_prism(vert)
+
+    return prism1, prism2
+
+  prism1, prism2 = make_prisms(rs, cs)
+  n_prisms = 2 * rs.shape[0]
+  prisms = jax.tree_util.tree_map(lambda *x: jp.concatenate(x), prism1, prism2)
+  dist, pos, n = jax.vmap(collider_fn, in_axes=[None, 0])(
+      obj.replace(pos=obj_pos, mat=obj_mat), prisms
+  )
+
+  dist = dist.flatten()
+  pos = pos.reshape((-1, 3))
+  n = n.reshape((-1, 3))
+  n *= -1  # flip the normal since we flipped args in the call to collider_fn
+
+  # Check that we're in the half-space of the hfield norm. If not, pick the top
+  # face norm. This resolves issues with cracks of doom.
+  n_repeats = dist.shape[0] // n_prisms
+  top_norm = jp.repeat(prisms.face_normal[:, 1], n_repeats, axis=0)
+  cond = jax.vmap(jp.dot, in_axes=[0, None])(n, h.mat[2]) < 1e-6
+  n = jp.where(cond[:, None], top_norm, n)
+
+  return dist, pos, n
+
+
+@collider(ncon=4)
+def hfield_sphere(
+    h: HFieldInfo, s: GeomInfo, subgrid_size: Tuple[int, int]
+) -> Collision:
+  """Calculates contacts between a hfield and a sphere."""
+  rbound = jp.max(s.size)
+  dist, pos, n = _hfield_collision(_sphere_convex, h, s, rbound, subgrid_size)
+
+  n_mean = jp.mean(n, axis=0)
+  mask = dist < jp.minimum(0, dist.min() + 1e-3)
+  idx = _manifold_points(pos, mask, n_mean)
+  dist, pos, n = dist[idx], pos[idx], n[idx]
+
+  # zero out non-unique contacts
+  unique = jp.tril(idx == idx[:, None]).sum(axis=1) == 1
+  dist = jp.where(unique, dist, 1)
+
+  # back to world frame, _hfield_collision returns collision in hfield frame
+  pos = jax.vmap(lambda p: h.mat @ p + h.pos)(pos)
+  n = jax.vmap(lambda n: h.mat @ n)(n)
+
+  return dist, pos, jax.vmap(math.make_frame)(n)
+
+
+@collider(ncon=4)
+def hfield_capsule(
+    h: HFieldInfo, c: GeomInfo, subgrid_size: Tuple[int, int]
+) -> Collision:
+  """Calculates contacts between a hfield and a capsule."""
+  rbound = c.size[0] + c.size[1]
+  dist, pos, n = _hfield_collision(_capsule_convex, h, c, rbound, subgrid_size)
+
+  n_mean = jp.mean(n, axis=0)
+  mask = dist < jp.minimum(0, dist.min() + 1e-3)
+  idx = _manifold_points(pos, mask, n_mean)
+  dist, pos, n = dist[idx], pos[idx], n[idx]
+
+  # zero out non-unique contacts
+  unique = jp.tril(idx == idx[:, None]).sum(axis=1) == 1
+  dist = jp.where(unique, dist, 1)
+
+  # back to world frame, _hfield_collision returns collision in hfield frame
+  pos = jax.vmap(lambda p: h.mat @ p + h.pos)(pos)
+  n = jax.vmap(lambda n: h.mat @ n)(n)
+
+  return dist, pos, jax.vmap(math.make_frame)(n)
+
+
+@collider(ncon=4)
+def hfield_convex(
+    h: HFieldInfo, c: ConvexInfo, subgrid_size: Tuple[int, int]
+) -> Collision:
+  """Calculates contacts between a hfield and a capsule."""
+  rbound = jp.max(c.size)
+  dist, pos, n = _hfield_collision(_convex_convex, h, c, rbound, subgrid_size)
+
+  n_mean = jp.mean(n, axis=0)
+  mask = dist < jp.minimum(0, dist.min() + 1e-3)
+  idx = _manifold_points(pos, mask, n_mean)
+  dist, pos, n = dist[idx], pos[idx], n[idx]
+
+  # zero out non-unique contacts
+  unique = jp.tril(idx == idx[:, None]).sum(axis=1) == 1
+  dist = jp.where(unique, dist, 1)
+
+  # back to world frame, _hfield_collision returns collision in hfield frame
+  pos = jax.vmap(lambda p: h.mat @ p + h.pos)(pos)
+  n = jax.vmap(lambda n: h.mat @ n)(n)
+
+  return dist, pos, jax.vmap(math.make_frame)(n)

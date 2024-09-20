@@ -18,7 +18,7 @@ import copy
 import dataclasses
 
 import typing
-from typing import Any, Dict, Optional, Sequence, TypeVar, Union
+from typing import Dict, Optional, Sequence, Tuple, TypeVar, Union
 import jax
 import numpy as np
 
@@ -30,7 +30,7 @@ def _jax_in_args(typ) -> bool:
     return True
   if dataclasses.is_dataclass(typ):
     return any(_jax_in_args(f.type) for f in dataclasses.fields(typ))
-  if typing.get_origin(typ) in (list, dict, Union, set):
+  if typing.get_origin(typ) in (tuple, list, dict, Union, set):
     return any(_jax_in_args(t) for t in typing.get_args(typ))
   return False
 
@@ -122,7 +122,7 @@ class PyTreeNode:
     raise NotImplementedError
 
   @classmethod
-  def fields(cls) -> tuple[dataclasses.Field[Any], ...]:
+  def fields(cls) -> Tuple[dataclasses.Field, ...]:  # pylint: disable=g-bare-generic
     return dataclasses.fields(cls)
 
   def tree_replace(

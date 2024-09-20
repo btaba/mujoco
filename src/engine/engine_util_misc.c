@@ -341,10 +341,6 @@ mjtNum mju_wrap(mjtNum* wpnt, const mjtNum* x0, const mjtNum* x1,
     mju_cross(axis[1], normal, axis[0]);
     mju_normalize3(axis[1]);
   } else {
-    // normal = z
-    normal[2] = 1;
-    normal[0] = normal[1] = 0;
-
     // 1st axis = x
     axis[0][0] = 1;
     axis[0][1] = axis[0][2] = 0;
@@ -362,21 +358,17 @@ mjtNum mju_wrap(mjtNum* wpnt, const mjtNum* x0, const mjtNum* x1,
   if (side) {
     // side point: apply same projection as x0, x1
     mju_sub3(tmp, side, xpos);
-    mju_mulMatTVec(s, xmat, tmp, 3, 3);
+    mju_mulMatTVec3(s, xmat, tmp);
+
+    // side point: project and rescale
     sd[0] = mju_dot3(s, axis[0]);
     sd[1] = mju_dot3(s, axis[1]);
-
-    // map to circle if outside, set to (0,0) if inside
-    if (mju_norm(sd, 2) >= size[0]) {
-      mju_normalize(sd, 2);
-      mju_scl(sd, sd, size[0], 2);
-    } else {
-      sd[0] = sd[1] = 0;
-    }
+    mju_normalize(sd, 2);
+    mju_scl(sd, sd, size[0], 2);
   }
 
   // apply inside wrap
-  if (side && sd[0] == 0 && sd[1] == 0) {
+  if (side && mju_norm3(s) < size[0]) {
     wlen = wrap_inside(pnt, d, size[0]);
   }
 
@@ -858,7 +850,7 @@ int mju_outsideBox(const mjtNum point[3], const mjtNum pos[3], const mjtNum mat[
 
   // vector from pos to point, projected to box frame
   mjtNum vec[3] = {point[0]-pos[0], point[1]-pos[1], point[2]-pos[2]};
-  mju_rotVecMatT(vec, vec, mat);
+  mju_mulMatTVec3(vec, mat, vec);
 
   // big: inflated box
   mjtNum big[3] = {size[0], size[1], size[2]};
@@ -1403,51 +1395,6 @@ char* mju_strncpy(char *dst, const char *src, int n) {
   }
 
   return dst;
-}
-
-
-
-// assemble full filename from directory and filename, return 0 on success
-int mju_makefullname(char* full, size_t nfull, const char* dir, const char* file) {
-  int dirlen = (!dir) ? 0 : strlen(dir);
-  int filelen = (!file) ? 0 : strlen(file);
-  char* filepos = full + dirlen;
-
-  // missing filename
-  if (!filelen) {
-    return -1;
-  }
-
-  // no directory then just copy filename over
-  if (!dirlen) {
-    // make sure full has space
-    if (filelen >= nfull) {
-      return -1;
-    }
-    strcpy(full, file);
-    return 0;
-  }
-
-  // make sure full has space
-  if (dirlen + filelen >= nfull) {
-    return -1;
-  }
-
-  // dir doesn't end with a slash
-  if (dir[dirlen - 1] != '\\' && dir[dirlen - 1] != '/') {
-    // need extra space for forward slash
-    if ((dirlen + filelen + 1) >= nfull) {
-      return -1;
-    }
-
-    // add forward slash
-    *filepos++ = '/';
-  }
-
-  // copy directory and file over
-  memcpy(full, dir, sizeof(char) * dirlen);
-  strcpy(filepos, file);
-  return 0;
 }
 
 
