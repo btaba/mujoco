@@ -28,7 +28,7 @@ def put_model(m: mujoco.MjModel) -> types.Model:
   mx.level_end = ti.Vector(np.array(level_end), ti.i32)
 
   # dynamic
-  mx.body_bfs.from_numpy(np.array(body_bfs))
+  mx.body_bfs.from_numpy(np.array(body_bfs, dtype=np.int32))
   mx.body_jntadr.from_numpy(m.body_jntadr)
   mx.body_jntnum.from_numpy(m.body_jntnum)
   mx.body_parentid.from_numpy(m.body_parentid)
