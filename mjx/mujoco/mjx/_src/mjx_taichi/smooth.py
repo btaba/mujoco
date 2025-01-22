@@ -21,7 +21,7 @@ from . import types
 
 
 @ti.kernel
-def _kinematics_level(m: ti.template(), d: ti.template()):
+def kinematics(m: ti.template(), d: ti.template()):
   for wid in range(d.nworld):
     # root body
     d.xpos[wid, 0] = tm.vec3(0.0)
@@ -77,7 +77,3 @@ def _kinematics_level(m: ti.template(), d: ti.template()):
         d.xpos[wid, bodyid] = xpos
         d.xquat[wid, bodyid] = tm.normalize(xquat)
         d.xmat[wid, bodyid] = math.quat_to_mat(xquat)
-
-
-def kinematics(m: types.Model, d: types.Data):
-  _kinematics_level(m, d)
