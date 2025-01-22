@@ -22,9 +22,6 @@ from . import types
 
 @ti.kernel
 def kinematics(m: ti.template(), d: ti.template()):
-  # for wid in range(d.nworld):
-
-
   for wid in range(d.nworld):
     # root body
     d.xpos[wid, 0] = tm.vec3(0.0)
