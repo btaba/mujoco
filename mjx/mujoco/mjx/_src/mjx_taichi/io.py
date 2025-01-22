@@ -27,7 +27,7 @@ def put_model(m: mujoco.MjModel) -> types.Model:
   mx.level_beg = ti.Vector(np.array(level_beg), ti.i32)
   mx.level_end = ti.Vector(np.array(level_end), ti.i32)
 
-  # dynamic
+  # dynamic fields
   mx.body_bfs.from_numpy(np.array(body_bfs, dtype=np.int32))
   mx.body_jntadr.from_numpy(m.body_jntadr)
   mx.body_jntnum.from_numpy(m.body_jntnum)
@@ -35,10 +35,6 @@ def put_model(m: mujoco.MjModel) -> types.Model:
   mx.body_mocapid.from_numpy(m.body_mocapid)
   mx.jnt_type.from_numpy(m.jnt_type)
   mx.jnt_qposadr.from_numpy(m.jnt_qposadr)
-
-  # Allocate and assign "non-static" fields that may slow down compilation.
-  # This also gets rid of taichi warnings about ti.Vectors larger than
-  #  32 entries possibly slowing down compilation.
   mx.qpos0.from_numpy(m.qpos0.astype(np.float32))
   mx.body_pos.from_numpy(m.body_pos.astype(np.float32))
   mx.body_quat.from_numpy(m.body_quat.astype(np.float32))
