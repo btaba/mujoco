@@ -19,8 +19,9 @@ import taichi.math as tm
 from . import math
 from . import types
 
+
 @ti.kernel
-def _kinematics_root(m: ti.template(), d: ti.template()):
+def _kinematics_level(m: ti.template(), d: ti.template()):
   for wid in range(d.nworld):
     # root body
     d.xpos[wid, 0] = tm.vec3(0.0)
@@ -29,9 +30,6 @@ def _kinematics_root(m: ti.template(), d: ti.template()):
     d.xmat[wid, 0] = ti.Matrix.identity(ti.f32, 3)
     d.ximat[wid, 0] = ti.Matrix.identity(ti.f32, 3)
 
-
-@ti.kernel
-def _kinematics_level(m: ti.template(), d: ti.template()):
   for wid in range(d.nworld):
     for level in ti.static(range(m.nlevel)):  # loop unroll
       # parallel loop over bodies at a given tree level
@@ -82,6 +80,4 @@ def _kinematics_level(m: ti.template(), d: ti.template()):
 
 
 def kinematics(m: types.Model, d: types.Data):
-  _kinematics_root(m, d)
-  ti.sync()
   _kinematics_level(m, d)

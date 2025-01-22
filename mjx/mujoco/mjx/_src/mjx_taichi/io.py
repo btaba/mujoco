@@ -39,18 +39,18 @@ def put_model(m: mujoco.MjModel) -> types.Model:
   # Allocate and assign "non-static" fields that may slow down compilation.
   # This also gets rid of taichi warnings about ti.Vectors larger than
   #  32 entries possibly slowing down compilation.
-  mx.qpos0.from_numpy(m.qpos0)
-  mx.body_pos.from_numpy(m.body_pos)
-  mx.body_quat.from_numpy(m.body_quat)
-  mx.body_ipos.from_numpy(m.body_ipos)
-  mx.body_iquat.from_numpy(m.body_iquat)
-  mx.jnt_axis.from_numpy(m.jnt_axis)
-  mx.jnt_pos.from_numpy(m.jnt_pos)
-  mx.geom_pos.from_numpy(m.geom_pos)
-  mx.geom_quat.from_numpy(m.geom_quat)
+  mx.qpos0.from_numpy(m.qpos0.astype(np.float32))
+  mx.body_pos.from_numpy(m.body_pos.astype(np.float32))
+  mx.body_quat.from_numpy(m.body_quat.astype(np.float32))
+  mx.body_ipos.from_numpy(m.body_ipos.astype(np.float32))
+  mx.body_iquat.from_numpy(m.body_iquat.astype(np.float32))
+  mx.jnt_axis.from_numpy(m.jnt_axis.astype(np.float32))
+  mx.jnt_pos.from_numpy(m.jnt_pos.astype(np.float32))
+  mx.geom_pos.from_numpy(m.geom_pos.astype(np.float32))
+  mx.geom_quat.from_numpy(m.geom_quat.astype(np.float32))
   if mx.nsite:
-    mx.site_pos.from_numpy(m.site_pos)
-    mx.site_quat.from_numpy(m.site_quat)
+    mx.site_pos.from_numpy(m.site_pos.astype(np.float32))
+    mx.site_quat.from_numpy(m.site_quat.astype(np.float32))
 
   return mx
 
@@ -59,5 +59,5 @@ def make_data(m: mujoco.MjModel, nworld: int = 1) -> types.Data:
   d = types.Data(m, nworld)
   d.nworld = nworld
   qpos0 = np.tile(m.qpos0, (nworld, 1))
-  d.qpos.from_numpy(qpos0)
+  d.qpos.from_numpy(qpos0.astype(np.float32))
   return d

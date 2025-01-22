@@ -20,7 +20,8 @@ from absl import app
 from absl import flags
 from etils import epath
 import mujoco
-from mujoco import mjx
+from . import test_util as wp_test_util
+from ..mjx_taichi import test_util as ti_test_util
 import warp as wp
 
 _MJCF = flags.DEFINE_string(
@@ -46,6 +47,9 @@ _LS_ITERATIONS = flags.DEFINE_integer(
 _OUTPUT = flags.DEFINE_enum(
     'output', 'text', ['text', 'tsv'], 'format to print results'
 )
+_BACKEND = flags.DEFINE_enum(
+  'backend', 'warp', ['warp', 'taichi'], 'the backend impl'
+)
 
 
 def _main(argv: Sequence[str]):
@@ -61,7 +65,14 @@ def _main(argv: Sequence[str]):
     m = mujoco.MjModel.from_xml_path(f.as_posix())
 
   print(f'Rolling out {_NSTEP.value} steps at dt = {m.opt.timestep:.3f}...')
-  jit_time, run_time, steps = mjx.benchmark(
+  if _BACKEND.value == 'warp':
+    benchmark = wp_test_util.benchmark
+  elif _BACKEND.value == 'taichi':
+    benchmark = ti_test_util.benchmark
+  else:
+    raise ValueError(f'{_BACKEND.value} nonexistent')
+
+  jit_time, run_time, steps = benchmark(
       m,
       _NSTEP.value,
       _BATCH_SIZE.value,
