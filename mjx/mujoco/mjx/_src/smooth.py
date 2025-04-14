@@ -21,6 +21,7 @@ from mujoco.mjx._src import math
 from mujoco.mjx._src import scan
 from mujoco.mjx._src import support
 # pylint: disable=g-importing-member
+from mujoco.mjx._src.types import BackendImpl
 from mujoco.mjx._src.types import CamLightType
 from mujoco.mjx._src.types import Data
 from mujoco.mjx._src.types import DisableBit
@@ -32,32 +33,34 @@ from mujoco.mjx._src.types import WrapType
 # pylint: enable=g-importing-member
 import numpy as np
 
+import warp as wp
 import mujoco_warp as mjwarp
 from warp.jax_experimental.ffi import jax_callable
 
 
 def kinematics(m: Model, d: Data) -> Data:
   """Converts position/velocity from generalized coordinates to maximal."""
-  if m._backend_impl == types.BackendImpl.WARP:
+  if m._backend_impl == BackendImpl.WARP:
     mjwarp_kinematics_jax = jax_callable(
       mjwarp._src.smooth.kinematics_,
       num_outputs=11,
       output_dims={
-        "xpos": (m.nbody, 3),
-        "xquat": (m.nbody, 4),
-        "xmat": (m.nbody, 3, 3),
-        "xipos": (m.nbody, 3),
-        "ximat": (m.nbody, 3, 3),
-        "xanchor": (m.njnt, 3),
-        "xaxis": (m.njnt, 3),
-        "geom_xpos": (m.ngeom, 3),
-        "geom_xmat": (m.ngeom, 3, 3),
-        "site_xpos": (m.nsite, 3),
-        "site_xmat": (m.nsite, 3, 3),
+        "xpos": (1, m.nbody,),
+        "xquat": (1, m.nbody,),
+        "xmat": (1, m.nbody, 3, 3),
+        "xipos": (1, m.nbody,),
+        "ximat": (1, m.nbody, 3, 3),
+        "xanchor": (1, m.njnt,),
+        "xaxis": (1, m.njnt,),
+        "geom_xpos": (1, m.ngeom,),
+        "geom_xmat": (1, m.ngeom, 3, 3),
+        "site_xpos": (1, m.nsite,),
+        "site_xmat": (1, m.nsite, 3, 3),
       }
     )
-    return mjwarp_kinematics_jax(
-      m.body_tree,
+    print(d.qpos, d.qpos.shape, d.xpos)
+    out = mjwarp_kinematics_jax(
+      wp.to_jax(m._blob.body_tree),
       m.qpos0,
       m.body_parentid,
       m.body_jntadr,
@@ -66,7 +69,7 @@ def kinematics(m: Model, d: Data) -> Data:
       m.body_quat,
       m.body_ipos,
       m.body_iquat,
-      m._blob.body_treeadr,
+      wp.to_jax(m._blob.body_treeadr),
       m.jnt_type,
       m.jnt_qposadr,
       m.jnt_pos,
@@ -78,20 +81,22 @@ def kinematics(m: Model, d: Data) -> Data:
       m.site_pos,
       m.site_quat,
       # Data Inputs
-      d.qpos,
-      # Data Outputs
-      d.xpos,
-      d.xquat,
-      d.xmat,
-      d.xipos,
-      d.ximat,
-      d.xanchor,
-      d.xaxis,
-      d.geom_xpos,
-      d.geom_xmat,
-      d.site_xpos,
-      d.site_xmat,
+      jp.expand_dims(d.qpos, axis=0),
     )
+    d = d.replace(
+      xpos=out[0],
+      xquat=out[1],
+      xmat=out[2],
+      xipos=out[3],
+      ximat=out[4],
+      xanchor=out[5],
+      xaxis=out[6],
+      geom_xpos=out[7],
+      geom_xmat=out[8],
+      site_xpos=out[9],
+      site_xmat=out[10],
+    )
+    return d
 
 
   def fn(carry, jnt_typs, jnt_pos, jnt_axis, qpos, qpos0, pos, quat):
@@ -1213,3 +1218,4 @@ def transmission(m: Model, d: Data) -> Data:
 
   d = d.replace(actuator_length=length, actuator_moment=moment)
   return d
+

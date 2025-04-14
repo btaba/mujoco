@@ -422,7 +422,7 @@ def make_data(
 
   if not _full_compat:
     for f in types.Data.fields():
-      if f.metadata.get('restricted_to') in ('mujoco', 'mjx', 'mjwarp', '_X'):
+      if f.metadata.get('restricted_to') in ('mujoco', 'mjx', 'mjwarp'):
         zero_fields[f.name] = (0, zero_fields[f.name][-1])
 
   zero_fields = {
