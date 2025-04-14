@@ -248,7 +248,7 @@ def put_model(
     # TODO(btaba): how the F are we going to batch / domain rando this thing?
     # we need a way to filter out mjwarp fields from mjx.Model fields, and not duplicate fields that
     # exist in both mjx and mjwarp
-    model = model.replace(_blob=mjwarp.io.put_model(m))
+    model = model.replace(_blob=mjwarp.put_model(m))
 
   return _strip_weak_type(model)
 
@@ -449,7 +449,7 @@ def make_data(
 
   d = d.replace(_backend_impl=backend_impl)
   if backend_impl == types.BackendImpl.WARP:
-    d = d.replace(_blob=mjwarp.io.make_data(m))  # TODO(btaba): how to handle vmap, nworld, etc.?
+    d = d.replace(_blob=mjwarp.make_data(m))  # TODO(btaba): how to handle vmap, nworld, etc.?
 
   return d
 
