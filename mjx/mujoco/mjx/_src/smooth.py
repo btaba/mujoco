@@ -222,7 +222,7 @@ def kinematics_warp(m: Model, d: Data) -> Data:
 @kinematics_warp.def_vmap
 def kinematics_warp_vmap(axis_size, in_batched, m: Model, d: Data) -> Data:
   assert d.qpos.shape[0] == axis_size and d.qpos.shape[1] > 0
-  return d, in_batched
+  return d, in_batched[1]
 
 
 def kinematics(m: Model, d: Data) -> Data:

@@ -1219,7 +1219,22 @@ class Model(PyTreeNode):
   _backend_impl: Optional[BackendImpl] = _restricted_to('_X')
 
   def __repr__(self) -> str:
-    return repr(self.replace(_blob=None))
+    cls_name = self.__class__.__name__
+    parts = []
+    for name, value in self.__dict__.items():
+      if name == '_blob':  # Skip the blob
+        continue
+
+      if isinstance(value, jax.Array): 
+        value_repr = f"{type(value).__name__}(shape={value.shape}, dtype={value.dtype})"
+      else:
+        value_repr = repr(value)
+
+      if len(value_repr) > 100:
+        value_repr = value_repr[:100] + '...'
+
+      parts.append(f"{name}={value_repr}")
+    return f"{cls_name}({', '.join(sorted(parts))})"
 
 
 class Contact(PyTreeNode):
@@ -1530,4 +1545,21 @@ class Data(PyTreeNode):
   _blob: Optional[Any] = _restricted_to('_X')
 
   def __repr__(self) -> str:
-    return repr(self.replace(_blob=None))
+    cls_name = self.__class__.__name__
+    parts = []
+    for name, value in self.__dict__.items():
+      if name == '_blob':  # Skip the blob
+        continue
+
+      if isinstance(value, jax.Array):
+        value_repr = f"{type(value).__name__}(shape={value.shape}, dtype={value.dtype})"
+      else:
+        value_repr = repr(value)
+
+      if len(value_repr) > 100:
+        value_repr = value_repr[:100] + '...'
+
+      parts.append(f"{name}={value_repr}")
+
+    return f"{cls_name}({', '.join(sorted(parts))})"
+
