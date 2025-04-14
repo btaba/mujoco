@@ -15,7 +15,7 @@
 """Functions to initialize, load, or save data."""
 
 import copy
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import jax
 from jax import numpy as jp
@@ -27,6 +27,8 @@ from mujoco.mjx._src import support
 from mujoco.mjx._src import types
 import numpy as np
 import scipy
+
+import mujoco_warp as mjwarp
 
 
 def _strip_weak_type(tree):
@@ -88,20 +90,43 @@ def _make_statistic(s: mujoco.MjStatistic) -> types.Statistic:
   )
 
 
+def _resolve_backend_impl(
+    backend_impl: Optional[Union[str, types.BackendImpl]]
+) -> types.BackendImpl:
+  if isinstance(backend_impl, types.BackendImpl):
+    return backend_impl
+
+  if backend_impl is not None:
+    return types.BackendImpl(backend_impl)
+
+  devices = jax.devices()
+  if any(d.platform == 'gpu' and 'nvidia' in d.device_kind.lower()
+         for d in devices):
+    return types.BackendImpl.WARP
+  if any(d.platform in ('gpu', 'tpu') for d in devices):
+    return types.BackendImpl.JAX
+  return types.BackendImpl.CPU
+
+
 def put_model(
-    m: mujoco.MjModel, device=None, _full_compat: bool = False  # pylint: disable=invalid-name
+    m: mujoco.MjModel,
+    device=None,
+    backend_impl: Optional[Union[str, types.BackendImpl]] = None,
+    _full_compat: bool = False  # pylint: disable=invalid-name
 ) -> types.Model:
   """Puts mujoco.MjModel onto a device, resulting in mjx.Model.
 
   Args:
     m: the model to put onto device
     device: which device to use - if unspecified picks the default device
+    backend_impl: backend implementation to use
     _full_compat: put all MjModel fields onto device irrespective of MJX support
       This is an experimental feature.  Avoid using it for now.
 
   Returns:
     an mjx.Model placed on device
   """
+  backend_impl = _resolve_backend_impl(backend_impl)
 
   mesh_geomid = set()
   for g1, g2, ip in collision_driver.geom_pairs(m):
@@ -159,7 +184,7 @@ def put_model(
   mj_field_names = {
       f.name
       for f in types.Model.fields()
-      if f.metadata.get('restricted_to') != 'mjx'
+      if f.metadata.get('restricted_to') not in ('mjx', 'mjwarp', '_X')
   }
   fields = {f: getattr(m, f) for f in mj_field_names}
 
@@ -211,15 +236,27 @@ def put_model(
         fields['mesh_convex'][dataid] = mesh.convex(m, dataid)  # pytype: disable=unsupported-operands
     fields['mesh_convex'] = tuple(fields['mesh_convex'])
 
-  model = types.Model(**{k: copy.copy(v) for k, v in fields.items()})
+  for f in types.Model.fields():
+    if f.metadata.get('restricted_to') == '_X':
+      fields[f.name] = None
 
+  model = types.Model(**{k: copy.copy(v) for k, v in fields.items()})
   model = jax.device_put(model, device=device)
+
+  model = model.replace(_backend_impl=backend_impl)
+  if backend_impl == types.BackendImpl.WARP:
+    # TODO(btaba): how the F are we going to batch / domain rando this thing?
+    # we need a way to filter out mjwarp fields from mjx.Model fields, and not duplicate fields that
+    # exist in both mjx and mjwarp
+    model = model.replace(_blob=mjwarp.io.put_model(m))
+
   return _strip_weak_type(model)
 
 
 def make_data(
     m: Union[types.Model, mujoco.MjModel],
     device=None,
+    backend_impl: Optional[Union[str, types.BackendImpl]] = None,
     _full_compat: bool = False,  # pylint: disable=invalid-name
 ) -> types.Data:
   """Allocate and initialize Data.
@@ -227,6 +264,7 @@ def make_data(
   Args:
     m: the model to use
     device: which device to use - if unspecified picks the default device
+    backend_impl: backend implementation to use
     _full_compat: create all MjData fields on device irrespective of MJX support
       This is an experimental feature.  Avoid using it for now. If using this
       flag, also use _full_compat for put_model.
@@ -234,6 +272,8 @@ def make_data(
   Returns:
     an initialized mjx.Data placed on device
   """
+  backend_impl = _resolve_backend_impl(backend_impl)
+
   dim = collision_driver.make_condim(m)
   efc_type = constraint.make_efc_type(m, dim)
   efc_address = constraint.make_efc_address(m, dim, efc_type)
@@ -382,12 +422,16 @@ def make_data(
 
   if not _full_compat:
     for f in types.Data.fields():
-      if f.metadata.get('restricted_to') in ('mujoco', 'mjx'):
+      if f.metadata.get('restricted_to') in ('mujoco', 'mjx', 'mjwarp', '_X'):
         zero_fields[f.name] = (0, zero_fields[f.name][-1])
 
   zero_fields = {
       k: np.zeros(v[:-1], dtype=v[-1]) for k, v in zero_fields.items()
   }
+
+  for f in types.Model.fields():
+    if f.metadata.get('restricted_to') == '_X':
+      zero_fields[f.name] = None
 
   d = types.Data(
       ne=ne,
@@ -402,6 +446,10 @@ def make_data(
       **zero_fields,
   )
   d = jax.device_put(d, device=device)
+
+  d = d.replace(_backend_impl=backend_impl)
+  if backend_impl == types.BackendImpl.WARP:
+    d = d.replace(_blob=mjwarp.io.make_data(m))  # TODO(btaba): how to handle vmap, nworld, etc.?
 
   return d
 
@@ -706,6 +754,11 @@ def put_data(
 
   fields['contact'] = contact
   fields.update(ne=ne, nf=nf, nl=nl, nefc=nefc, ncon=ncon, efc_type=efc_type)
+
+
+  for f in types.Model.fields():
+    if f.metadata.get('restricted_to') == '_X':
+      fields[f.name] = None
 
   # copy because device_put is async:
   data = types.Data(**{k: copy.copy(v) for k, v in fields.items()})

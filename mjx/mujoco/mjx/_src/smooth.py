@@ -32,9 +32,67 @@ from mujoco.mjx._src.types import WrapType
 # pylint: enable=g-importing-member
 import numpy as np
 
+import mujoco_warp as mjwarp
+from warp.jax_experimental.ffi import jax_callable
+
 
 def kinematics(m: Model, d: Data) -> Data:
   """Converts position/velocity from generalized coordinates to maximal."""
+  if m._backend_impl == types.BackendImpl.WARP:
+    mjwarp_kinematics_jax = jax_callable(
+      mjwarp._src.smooth.kinematics_,
+      num_outputs=11,
+      output_dims={
+        "xpos": (m.nbody, 3),
+        "xquat": (m.nbody, 4),
+        "xmat": (m.nbody, 3, 3),
+        "xipos": (m.nbody, 3),
+        "ximat": (m.nbody, 3, 3),
+        "xanchor": (m.njnt, 3),
+        "xaxis": (m.njnt, 3),
+        "geom_xpos": (m.ngeom, 3),
+        "geom_xmat": (m.ngeom, 3, 3),
+        "site_xpos": (m.nsite, 3),
+        "site_xmat": (m.nsite, 3, 3),
+      }
+    )
+    return mjwarp_kinematics_jax(
+      m.body_tree,
+      m.qpos0,
+      m.body_parentid,
+      m.body_jntadr,
+      m.body_jntnum,
+      m.body_pos,
+      m.body_quat,
+      m.body_ipos,
+      m.body_iquat,
+      m._blob.body_treeadr,
+      m.jnt_type,
+      m.jnt_qposadr,
+      m.jnt_pos,
+      m.jnt_axis,
+      m.geom_bodyid,
+      m.geom_pos,
+      m.geom_quat,
+      m.site_bodyid,
+      m.site_pos,
+      m.site_quat,
+      # Data Inputs
+      d.qpos,
+      # Data Outputs
+      d.xpos,
+      d.xquat,
+      d.xmat,
+      d.xipos,
+      d.ximat,
+      d.xanchor,
+      d.xaxis,
+      d.geom_xpos,
+      d.geom_xmat,
+      d.site_xpos,
+      d.site_xmat,
+    )
+
 
   def fn(carry, jnt_typs, jnt_pos, jnt_axis, qpos, qpos0, pos, quat):
     # calculate joint anchors, axes, body pos and quat in global frame

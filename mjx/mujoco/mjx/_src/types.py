@@ -16,7 +16,7 @@
 
 import dataclasses
 import enum
-from typing import Tuple
+from typing import Any, Optional, Tuple
 import jax
 import mujoco
 from mujoco.mjx._src.dataclasses import PyTreeNode  # pylint: disable=g-importing-member
@@ -25,7 +25,7 @@ import numpy as np
 
 def _restricted_to(platform: str):
   """Specifies whether a field exists in only MuJoCo or MJX."""
-  if platform not in ('mujoco', 'mjx'):
+  if platform not in ('mujoco', 'mjx', 'mjwarp', '_X'):
     raise ValueError(f'unknown platform: {platform}')
   return dataclasses.field(metadata={'restricted_to': platform})
 
@@ -515,6 +515,13 @@ class Statistic(PyTreeNode):
   meansize: jax.Array
   extent: jax.Array
   center: jax.Array
+
+
+class BackendImpl(enum.Enum):
+  """Backend implementation to use."""
+  CPU = 'c'
+  JAX = 'jax'
+  WARP = 'warp'
 
 
 class Model(PyTreeNode):
@@ -1208,6 +1215,9 @@ class Model(PyTreeNode):
   signature: np.uint64
   _sizes: jax.Array
 
+  _blob: Any = _restricted_to('_X')
+  _backend_impl: Optional[BackendImpl] = _restricted_to('_X')
+
 
 class Contact(PyTreeNode):
   """Result of collision detection functions.
@@ -1512,3 +1522,6 @@ class Data(PyTreeNode):
   _qM_sparse: jax.Array = _restricted_to('mjx')  # pylint:disable=invalid-name
   _qLD_sparse: jax.Array = _restricted_to('mjx')  # pylint:disable=invalid-name
   _qLDiagInv_sparse: jax.Array = _restricted_to('mjx')  # pylint:disable=invalid-name
+
+  _backend_impl: Optional[BackendImpl] = _restricted_to('_X')
+  _blob: Optional[Any] = _restricted_to('_X')
