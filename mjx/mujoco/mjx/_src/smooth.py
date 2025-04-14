@@ -176,7 +176,7 @@ def _kinematics_warp(m: Model, d: Data, nworld: int) -> Data:
     }
   )
   out = mjwarp_kinematics_jax(
-    wp.to_jax(m._blob.body_tree),
+    m._blob.body_tree.numpy(),
     m.qpos0,
     m.body_parentid,
     m.body_jntadr,
@@ -185,7 +185,7 @@ def _kinematics_warp(m: Model, d: Data, nworld: int) -> Data:
     m.body_quat,
     m.body_ipos,
     m.body_iquat,
-    wp.to_jax(m._blob.body_treeadr),
+    m._blob.body_treeadr.numpy(),
     m.jnt_type,
     m.jnt_qposadr,
     m.jnt_pos,
@@ -197,30 +197,32 @@ def _kinematics_warp(m: Model, d: Data, nworld: int) -> Data:
     m.site_pos,
     m.site_quat,
     # Data Inputs
-    jp.expand_dims(d.qpos, axis=0),
+    jp.expand_dims(d.qpos, axis=0) if nworld == 1 else d.qpos,
   )
   d = d.replace(
-    xpos=out[0],
-    xquat=out[1],
-    xmat=out[2],
-    xipos=out[3],
-    ximat=out[4],
-    xanchor=out[5],
-    xaxis=out[6],
-    geom_xpos=out[7],
-    geom_xmat=out[8],
-    site_xpos=out[9],
-    site_xmat=out[10],
+    xpos=jp.squeeze(out[0], axis=0) if nworld == 1 else out[0],
+    xquat=jp.squeeze(out[1], axis=0) if nworld == 1 else out[1],
+    xmat=jp.squeeze(out[2], axis=0) if nworld == 1 else out[2],
+    xipos=jp.squeeze(out[3], axis=0) if nworld == 1 else out[3],
+    ximat=jp.squeeze(out[4], axis=0) if nworld == 1 else out[4],
+    xanchor=jp.squeeze(out[5], axis=0) if nworld == 1 else out[5],
+    xaxis=jp.squeeze(out[6], axis=0) if nworld == 1 else out[6],
+    geom_xpos=jp.squeeze(out[7], axis=0) if nworld == 1 else out[7],
+    geom_xmat=jp.squeeze(out[8], axis=0) if nworld == 1 else out[8],
+    site_xpos=jp.squeeze(out[9], axis=0) if nworld == 1 else out[9],
+    site_xmat=jp.squeeze(out[10], axis=0) if nworld == 1 else out[10],
   )
   return d
 
 @jax.custom_batching.custom_vmap
 def kinematics_warp(m: Model, d: Data) -> Data:
-  return _kinematics_warp(m, d, 1)
+  d = _kinematics_warp(m, d, 1)
+  return d
 
 @kinematics_warp.def_vmap
 def kinematics_warp_vmap(axis_size, in_batched, m: Model, d: Data) -> Data:
-  return _kinematics_warp(m, d, axis_size)
+  assert d.qpos.shape[0] == axis_size and d.qpos.shape[1] > 0
+  return d, in_batched
 
 
 def kinematics(m: Model, d: Data) -> Data:

@@ -1525,3 +1525,6 @@ class Data(PyTreeNode):
 
   _backend_impl: Optional[BackendImpl] = _restricted_to('_X')
   _blob: Optional[Any] = _restricted_to('_X')
+
+  def __repr__(self) -> str:
+    return repr(self.replace(_blob=None))
