@@ -1218,6 +1218,9 @@ class Model(PyTreeNode):
   _blob: Any = _restricted_to('_X')
   _backend_impl: Optional[BackendImpl] = _restricted_to('_X')
 
+  def __repr__(self) -> str:
+    return repr(self.replace(_blob=None))
+
 
 class Contact(PyTreeNode):
   """Result of collision detection functions.
