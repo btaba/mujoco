@@ -38,125 +38,7 @@ import mujoco_warp as mjwarp
 from warp.jax_experimental.ffi import jax_callable
 
 
-
-# # SINGLE CALL
-# import jax
-# import jax.numpy as jp
-# import warp as wp
-# from warp.jax_experimental.ffi import jax_callable
-# @wp.kernel
-# def scale_kernel(a: wp.array(dtype=float), s: float, output: wp.array(dtype=float)):
-#     tid = wp.tid()
-#     output[tid] = a[tid] * s
-
-# def example_func(
-#     a: wp.array(dtype=float),
-#     s: float,
-#     c: wp.array(dtype=float),
-# ):
-#   print(a.shape)
-#   wp.launch(scale_kernel, dim=a.shape, inputs=[a, s], outputs=[c])
-
-
-# def jax_func(a: jax.Array, s: float):
-#   jf = jax_callable(example_func, num_outputs=1)
-#   return jf(a, s)
-
-# c = jax.jit(jax_func, static_argnums=(1,))(jp.ones(10), 2)
-# c = jax.jit(jax.vmap(jax_func, in_axes=(0, None)), static_argnums=(1,))(jp.ones((10, 10)), 2)
-
-
-# # VMAP CALL
-# import jax
-# import jax.numpy as jp
-# import warp as wp
-# from warp.jax_experimental.ffi import jax_callable
-
-# @wp.kernel
-# def scale_kernel(a: wp.array2d(dtype=float), s: float, output: wp.array2d(dtype=float)):
-#     wid, tid = wp.tid()
-#     output[wid, tid] = a[wid, tid] * s
-
-# def example_func(
-#     a: wp.array2d(dtype=float),
-#     s: float,
-#     c: wp.array2d(dtype=float),
-# ):
-#   wp.launch(scale_kernel, dim=a.shape, inputs=[a, s], outputs=[c])
-
-# def jax_func(a: jax.Array, s: float):
-#   jf = jax_callable(example_func, num_outputs=1, vmap_method="broadcast_all")
-#   return jf(a, s)
-
-# c = jax.jit(jax_func, static_argnums=(1,))(jp.ones((10, 10)), 2)  # works
-# c = jax.jit(jax.vmap(jax_func, in_axes=(0, None)), static_argnums=(1,))(jp.ones((10, 10, 10)), 2)  # fails
-
-
-# def jax_func(a: jax.Array, s: float):
-#   print('JAX', a)
-#   jf = jax_callable(example_func, num_outputs=1, vmap_method="broadcast_all")
-#   return jf(a, s)
-
-
-
-# jax_mjwarp_step = jax_callable(
-#   mjwarp_step,
-#   num_outputs=8,
-#   output_dims={
-#     "qpos_out": (NWORLD, mjm.nq),
-#     "qvel_out": (NWORLD, mjm.nv),
-#     "xpos_out": (NWORLD, mjm.nbody, 3),
-#     "xmat_out": (NWORLD, mjm.nbody, 3, 3),
-#     "qacc_warmstart_out": (NWORLD, mjm.nv),
-#     "subtree_com_out": (NWORLD, mjm.nbody, 3),
-#     "cvel_out": (NWORLD, mjm.nbody, 6),
-#     "site_xpos_out": (NWORLD, mjm.nsite, 3),
-#   },
-# )
-
-# # the functions below allow us to call MJWarp step inside jax vmap:
-
-
-# @jax.custom_batching.custom_vmap
-# def step(d: mjx.Data):
-#   return d
-
-
-# @step.def_vmap
-# def step_vmap_rule(axis_size, in_batched, d: mjx.Data):
-#   if in_batched[0].ctrl:
-#     assert d.ctrl.shape[0] == axis_size
-#   else:
-#     d = d.replace(ctrl=jp.tile(d.ctrl, (axis_size, 1)))
-#   params = {f.name: None for f in dataclasses.fields(mjx.Data)}
-#   params["ctrl"] = True
-#   params["qpos"] = True
-#   params["qvel"] = True
-#   params["xpos"] = True
-#   params["xmat"] = True
-#   params["qacc_warmstart"] = True
-#   params["subtree_com"] = True
-#   params["cvel"] = True
-#   params["site_xpos"] = True
-#   out_batched = mjx.Data(**params)
-
-#   qpos, qvel, xpos, xmat, qacc_warmstart, subtree_com, cvel, site_xpos = (
-#     jax_mjwarp_step(d.ctrl, d.qpos, d.qvel, d.qacc_warmstart)
-#   )
-#   d = d.replace(
-#     qpos=qpos,
-#     qvel=qvel,
-#     xpos=xpos,
-#     xmat=xmat,
-#     qacc_warmstart=qacc_warmstart,
-#     subtree_com=subtree_com,
-#     cvel=cvel,
-#     site_xpos=site_xpos,
-#   )
-#   return d, out_batched
-
-
-# TODO(btaba): do not use custom_vmap, jax_callable FFI should work with vmap...
+# TODO(btaba): do not use custom_vmap, jax_callable FFI should work more seamlessly with vmap...
 def _kinematics_warp(m: Model, d: Data, nworld: int) -> Data:
   mjwarp_kinematics_jax = jax_callable(
     mjwarp._src.smooth.kinematics_,
@@ -217,7 +99,7 @@ def _kinematics_warp(m: Model, d: Data, nworld: int) -> Data:
 
 @jax.custom_batching.custom_vmap
 def kinematics_warp(m: Model, d: Data) -> Data:
-  d = _kinematics_warp(m, d, 1)
+  # d = _kinematics_warp(m, d, 1)
   return d
 
 @kinematics_warp.def_vmap
