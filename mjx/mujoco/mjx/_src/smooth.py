@@ -38,25 +38,75 @@ import mujoco_warp as mjwarp
 from warp.jax_experimental.ffi import jax_callable
 
 
+
+
+"""
+import jax
+import jax.numpy as jp
+import warp as wp
+from warp.jax_experimental.ffi import jax_callable
+
+@wp.kernel
+def scale_kernel(a: wp.array2d(dtype=float), s: wp.array2d(dtype=float), output: wp.array2d(dtype=float)):
+    wid, tid = wp.tid()
+    output[wid, tid] = a[wid, tid] * s
+
+def example_func(
+    a: wp.array2d(dtype=float),
+    s: float,
+    c: wp.array2d(dtype=float),
+):
+  wp.launch(scale_kernel, dim=a.shape, inputs=[a, s], outputs=[c])
+
+def jax_func(a: jax.Array, s: float):
+  jf = jax_callable(example_func, num_outputs=1, vmap_method="expand_dims")
+  return jf(a, s)
+
+c = jax.jit(jax_func, static_argnums=(1,))(jp.ones((10, 10)), 2)  # works!
+c = jax.jit(jax.vmap(jax_func, in_axes=(0, None)), static_argnums=(1,))(jp.ones((10, 10, 10)), 2)  # does not work
+"""
+
+
+
+nworld = 4
+m = mujoco.MjModel.from_xml_path('./mujoco/mjx/test_data/humanoid/humanoid.xml')
+mjwarp_kinematics_jax = jax_callable(
+  mjwarp._src.smooth.kinematics_,
+  num_outputs=11,
+  output_dims={
+    "xpos": (nworld, m.nbody, 3),
+    "xquat": (nworld, m.nbody, 4),
+    "xmat": (nworld, m.nbody, 3, 3),
+    "xipos": (nworld, m.nbody, 3),
+    "ximat": (nworld, m.nbody, 3, 3),
+    "xanchor": (nworld, m.njnt, 3),
+    "xaxis": (nworld, m.njnt, 3),
+    "geom_xpos": (nworld, m.ngeom, 3),
+    "geom_xmat": (nworld, m.ngeom, 3, 3),
+    "site_xpos": (nworld, m.nsite, 3),
+    "site_xmat": (nworld, m.nsite, 3, 3),
+  }
+)
+
 # TODO(btaba): do not use custom_vmap, jax_callable FFI should work more seamlessly with vmap...
 def _kinematics_warp(m: Model, d: Data, nworld: int) -> Data:
-  mjwarp_kinematics_jax = jax_callable(
-    mjwarp._src.smooth.kinematics_,
-    num_outputs=11,
-    output_dims={
-      "xpos": (nworld, m.nbody, 3),
-      "xquat": (nworld, m.nbody, 4),
-      "xmat": (nworld, m.nbody, 3, 3),
-      "xipos": (nworld, m.nbody, 3),
-      "ximat": (nworld, m.nbody, 3, 3),
-      "xanchor": (nworld, m.njnt, 3),
-      "xaxis": (nworld, m.njnt, 3),
-      "geom_xpos": (nworld, m.ngeom, 3),
-      "geom_xmat": (nworld, m.ngeom, 3, 3),
-      "site_xpos": (nworld, m.nsite, 3),
-      "site_xmat": (nworld, m.nsite, 3, 3),
-    }
-  )
+  # mjwarp_kinematics_jax = jax_callable(
+  #   mjwarp._src.smooth.kinematics_,
+  #   num_outputs=11,
+  #   output_dims={
+  #     "xpos": (nworld, m.nbody, 3),
+  #     "xquat": (nworld, m.nbody, 4),
+  #     "xmat": (nworld, m.nbody, 3, 3),
+  #     "xipos": (nworld, m.nbody, 3),
+  #     "ximat": (nworld, m.nbody, 3, 3),
+  #     "xanchor": (nworld, m.njnt, 3),
+  #     "xaxis": (nworld, m.njnt, 3),
+  #     "geom_xpos": (nworld, m.ngeom, 3),
+  #     "geom_xmat": (nworld, m.ngeom, 3, 3),
+  #     "site_xpos": (nworld, m.nsite, 3),
+  #     "site_xmat": (nworld, m.nsite, 3, 3),
+  #   }
+  # )
   out = mjwarp_kinematics_jax(
     m._blob.body_tree.numpy(),
     m.qpos0,
@@ -94,13 +144,14 @@ def _kinematics_warp(m: Model, d: Data, nworld: int) -> Data:
     site_xpos=jp.squeeze(out[9], axis=0) if nworld == 1 else out[9],
     site_xmat=jp.squeeze(out[10], axis=0) if nworld == 1 else out[10],
   )
-  jax.debug.print('xpos={x}', x=d.xpos)
   return d
+
 
 @jax.custom_batching.custom_vmap
 def kinematics_warp(m: Model, d: Data) -> Data:
-  # d = _kinematics_warp(m, d, 1)
+  d = _kinematics_warp(m, d, 1)
   return d
+
 
 @kinematics_warp.def_vmap
 def kinematics_warp_vmap(axis_size, in_batched, m: Model, d: Data) -> Data:
