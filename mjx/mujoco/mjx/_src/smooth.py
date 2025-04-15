@@ -212,6 +212,7 @@ def _kinematics_warp(m: Model, d: Data, nworld: int) -> Data:
     site_xpos=jp.squeeze(out[9], axis=0) if nworld == 1 else out[9],
     site_xmat=jp.squeeze(out[10], axis=0) if nworld == 1 else out[10],
   )
+  jax.debug.print('xpos={x}', x=d.xpos)
   return d
 
 @jax.custom_batching.custom_vmap
@@ -221,8 +222,8 @@ def kinematics_warp(m: Model, d: Data) -> Data:
 
 @kinematics_warp.def_vmap
 def kinematics_warp_vmap(axis_size, in_batched, m: Model, d: Data) -> Data:
-  assert d.qpos.shape[0] == axis_size and d.qpos.shape[1] > 0
-  return d, in_batched[1]
+  assert d.qpos.shape[0] == axis_size and d.qpos.shape[1] == m.nq, (d.qpos.shape, (axis_size, m.nq))
+  return _kinematics_warp(m, d, axis_size), in_batched[1]
 
 
 def kinematics(m: Model, d: Data) -> Data:
