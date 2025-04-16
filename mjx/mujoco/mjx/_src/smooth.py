@@ -149,7 +149,7 @@ def _kinematics_warp(m: Model, d: Data, nworld: int) -> Data:
 
 @jax.custom_batching.custom_vmap
 def kinematics_warp(m: Model, d: Data) -> Data:
-  d = _kinematics_warp(m, d, 1)
+  # d = _kinematics_warp(m, d, 1)
   return d
 
 

@@ -498,6 +498,8 @@ class Option(PyTreeNode):
   sdf_initpoints: int = _restricted_to('mujoco')
   sdf_iterations: int = _restricted_to('mujoco')
 
+  # add a backend specific Option
+
 
 class Statistic(PyTreeNode):
   """Model statistics (in qpos0).
