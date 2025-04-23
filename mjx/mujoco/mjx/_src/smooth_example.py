@@ -1,16 +1,27 @@
-"""Core smooth dynamics functions, example  calling into Warp."""
+"""Core smooth dynamics functions, example  calling into Warp.
+
+
+Install the deps:
+
+```
+git clone https://github.com/btaba/mujoco.git
+cd mujoco
+git checkout mjx-warp
+cd mjx
+pip install -e . # in the top-level mjx directory
+pip install warp-lang --pre --upgrade -f https://pypi.nvidia.com/warp-lang/
+pip install mujoco_warp
+```
+"""
 import jax
 import jax.numpy as jp
 import mujoco
 
-# pip install -e . # in the top-level mjx directory
 from mujoco import mjx
 from mujoco.mjx._src.types import Data
 from mujoco.mjx._src.types import JointType
 from mujoco.mjx._src.types import Model
 
-# pip install warp-lang --pre --upgrade -f https://pypi.nvidia.com/warp-lang/
-# pip install mujoco_warp
 import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src.warp_util import kernel
