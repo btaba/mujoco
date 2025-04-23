@@ -228,24 +228,25 @@ def kinematics_(
 """
 Code in MJX that will call into Warp code.
 """
+
 def _kinematics_warp(m: Model, d: Data) -> Data:
   """This would live in MJX."""
-    mjwarp_kinematics_jax = jax_callable(
-        kinematics_,
-        num_outputs=9,
-        vmap_method='broadcast_all',
-        output_dims={
-            'xpos': (m.nbody, 3),
-            'xquat': (m.nbody, 4),
-            'xmat': (m.nbody, 3, 3),
-            'xipos': (m.nbody, 3),
-            'ximat': (m.nbody, 3, 3),
-            'xanchor': (m.njnt, 3),
-            'xaxis': (m.njnt, 3),
-            'geom_xpos': (m.ngeom, 3),
-            'geom_xmat': (m.ngeom, 3, 3),
-        }
-    )
+  mjwarp_kinematics_jax = jax_callable(
+    kinematics_,
+    num_outputs=9,
+    vmap_method='broadcast_all',
+    output_dims={
+      'xpos': (m.nbody, 3),
+      'xquat': (m.nbody, 4),
+      'xmat': (m.nbody, 9),
+      'xipos': (m.nbody, 3),
+      'ximat': (m.nbody, 9),
+      'xanchor': (m.njnt, 3),
+      'xaxis': (m.njnt, 3),
+      'geom_xpos': (m.ngeom, 3),
+      'geom_xmat': (m.ngeom, 9),
+    }
+  )
   out = mjwarp_kinematics_jax(
     m._blob.body_tree.numpy(),
     m.qpos0,
@@ -278,8 +279,6 @@ def _kinematics_warp(m: Model, d: Data) -> Data:
     xaxis=out[6],
     geom_xpos=out[7],
     geom_xmat=out[8],
-    site_xpos=out[9],
-    site_xmat=out[10],
   )
   return d
 
@@ -306,3 +305,29 @@ jax.jit(jax.vmap(kinematics, in_axes=(None, 0)))(mx, dx_batch)
 
 # we also need a way to expand_dims if not called in vmap
 jax.jit(kinematics)(mx, dx)
+
+
+
+import jax
+import jax.numpy as jp
+import warp as wp
+from warp.jax_experimental.ffi import jax_callable
+
+@wp.kernel
+def scale_kernel(a: wp.array2d(dtype=float), s: float, output: wp.array2d(dtype=float)):
+    wid, tid = wp.tid()
+    output[wid, tid] = a[wid, tid] * s
+
+def example_func(
+    a: wp.array2d(dtype=float),
+    s: float,
+    c: wp.array2d(dtype=float),
+):
+  wp.launch(scale_kernel, dim=a.shape, inputs=[a, s], outputs=[c])
+
+def jax_func(a: jax.Array, s: float):
+  jf = jax_callable(example_func, num_outputs=1, vmap_method="broadcast_all")
+  return jf(a, s)
+
+# c = jax.jit(jax_func, static_argnums=(1,))(jp.ones((10, 10)), 2)  # works!
+c = jax.jit(jax.vmap(jax_func, in_axes=(0, None)), static_argnums=(1,))(jp.ones((10, 10, 10)), 2)  # does not work

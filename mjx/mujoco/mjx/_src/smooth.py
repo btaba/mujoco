@@ -67,7 +67,7 @@ c = jax.jit(jax.vmap(jax_func, in_axes=(0, None)), static_argnums=(1,))(jp.ones(
 """
 
 
-
+"""
 nworld = 4
 m = mujoco.MjModel.from_xml_path('./mujoco/mjx/test_data/humanoid/humanoid.xml')
 mjwarp_kinematics_jax = jax_callable(
@@ -157,7 +157,7 @@ def kinematics_warp(m: Model, d: Data) -> Data:
 def kinematics_warp_vmap(axis_size, in_batched, m: Model, d: Data) -> Data:
   assert d.qpos.shape[0] == axis_size and d.qpos.shape[1] == m.nq, (d.qpos.shape, (axis_size, m.nq))
   return _kinematics_warp(m, d, axis_size), in_batched[1]
-
+"""
 
 def kinematics(m: Model, d: Data) -> Data:
   """Converts position/velocity from generalized coordinates to maximal."""
