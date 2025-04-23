@@ -161,8 +161,8 @@ def kinematics_warp_vmap(axis_size, in_batched, m: Model, d: Data) -> Data:
 
 def kinematics(m: Model, d: Data) -> Data:
   """Converts position/velocity from generalized coordinates to maximal."""
-  if m._backend_impl == BackendImpl.WARP:
-    return kinematics_warp(m, d)
+  # if m._backend_impl == BackendImpl.WARP:
+  #   return kinematics_warp(m, d)
 
   def fn(carry, jnt_typs, jnt_pos, jnt_axis, qpos, qpos0, pos, quat):
     # calculate joint anchors, axes, body pos and quat in global frame
