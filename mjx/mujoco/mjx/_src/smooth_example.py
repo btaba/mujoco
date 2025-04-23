@@ -301,33 +301,5 @@ keys = jax.random.split(rng, BATCH_SIZE)
 dx_batch = jax.vmap(lambda rng: dx.replace(qpos=dx.qpos * jax.random.uniform(rng, (1,))))(keys)
 
 
-jax.jit(jax.vmap(kinematics, in_axes=(None, 0)))(mx, dx_batch)
-
-# we also need a way to expand_dims if not called in vmap
 jax.jit(kinematics)(mx, dx)
-
-
-
-import jax
-import jax.numpy as jp
-import warp as wp
-from warp.jax_experimental.ffi import jax_callable
-
-@wp.kernel
-def scale_kernel(a: wp.array2d(dtype=float), s: float, output: wp.array2d(dtype=float)):
-    wid, tid = wp.tid()
-    output[wid, tid] = a[wid, tid] * s
-
-def example_func(
-    a: wp.array2d(dtype=float),
-    s: float,
-    c: wp.array2d(dtype=float),
-):
-  wp.launch(scale_kernel, dim=a.shape, inputs=[a, s], outputs=[c])
-
-def jax_func(a: jax.Array, s: float):
-  jf = jax_callable(example_func, num_outputs=1, vmap_method="broadcast_all")
-  return jf(a, s)
-
-# c = jax.jit(jax_func, static_argnums=(1,))(jp.ones((10, 10)), 2)  # works!
-c = jax.jit(jax.vmap(jax_func, in_axes=(0, None)), static_argnums=(1,))(jp.ones((10, 10, 10)), 2)  # does not work
+jax.jit(jax.vmap(kinematics, in_axes=(None, 0)))(mx, dx_batch)
