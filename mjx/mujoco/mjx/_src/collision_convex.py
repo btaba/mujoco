@@ -56,7 +56,7 @@ def collider(ncon: int):
               pos=0, mat=0, size=0, face=0, vert=0
           )
         elif key.types[i] == GeomType.MESH:
-          c, cm = infos[i], m.mesh_convex[key.data_ids[i]]
+          c, cm = infos[i], m._impl.mesh_convex[key.data_ids[i]]  # pytype: disable=attribute-error
           infos[i] = ConvexInfo(**vars(c), **vars(cm))
           in_axes[i] = jax.tree_util.tree_map(lambda x: None, infos[i]).replace(
               pos=0, mat=0, size=0

@@ -72,11 +72,11 @@ def _spring_damper(m: Model, d: Data) -> jax.Array:
   qfrc -= m.dof_damping * d.qvel
 
   # tendon-level spring-dampers
-  below, above = m.tendon_lengthspring.T - d.ten_length
+  below, above = m.tendon_lengthspring.T - d._impl.ten_length
   frc_spring = jp.where(below > 0, m.tendon_stiffness * below, 0)
   frc_spring = jp.where(above < 0, m.tendon_stiffness * above, frc_spring)
-  frc_damper = -m.tendon_damping * d.ten_velocity
-  qfrc += d.ten_J.T @ (frc_spring + frc_damper)
+  frc_damper = -m.tendon_damping * d._impl.ten_velocity
+  qfrc += d._impl.ten_J.T @ (frc_spring + frc_damper)
 
   return qfrc
 
@@ -124,7 +124,7 @@ def passive(m: Model, d: Data) -> Data:
     # add gravcomp unless added via actuators
     qfrc_passive += qfrc_gravcomp * (1 - m.jnt_actgravcomp[m.dof_jntid])
 
-  if m.opt.has_fluid_params:
+  if m.opt.has_fluid_params:  # pytype: disable=attribute-error
     qfrc_passive += _fluid(m, d)
 
   d = d.replace(qfrc_passive=qfrc_passive, qfrc_gravcomp=qfrc_gravcomp)

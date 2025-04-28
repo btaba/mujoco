@@ -81,10 +81,10 @@ def fwd_position(m: Model, d: Data) -> Data:
 @named_scope
 def fwd_velocity(m: Model, d: Data) -> Data:
   """Velocity-dependent computations."""
-  d = d.replace(
-      actuator_velocity=d.actuator_moment @ d.qvel,
-      ten_velocity=d.ten_J @ d.qvel,
-  )
+  d = d.tree_replace({
+      '_impl.actuator_velocity': d._impl.actuator_moment @ d.qvel,  # pytype: disable=attribute-error
+      '_impl.ten_velocity': d._impl.ten_J @ d.qvel,  # pytype: disable=attribute-error
+  })
   d = smooth.com_vel(m, d)
   d = passive.passive(m, d)
   d = smooth.rne(m, d)
@@ -173,8 +173,8 @@ def fwd_actuation(m: Model, d: Data) -> Data:
       m.actuator_gainprm,
       m.actuator_biastype,
       m.actuator_biasprm,
-      d.actuator_length,
-      d.actuator_velocity,
+      d._impl.actuator_length,  # pytype: disable=attribute-error
+      d._impl.actuator_velocity,  # pytype: disable=attribute-error
       ctrl_act,
       jp.array(m.actuator_lengthrange),
       jp.array(m.actuator_acc0),
@@ -215,7 +215,7 @@ def fwd_actuation(m: Model, d: Data) -> Data:
   )
   force = jp.clip(force, forcerange[:, 0], forcerange[:, 1])
 
-  qfrc_actuator = d.actuator_moment.T @ force
+  qfrc_actuator = d._impl.actuator_moment.T @ force  # pytype: disable=attribute-error
 
   if m.ngravcomp:
     # actuator-level gravity compensation, skip if added as passive force
@@ -335,9 +335,10 @@ def euler(m: Model, d: Data) -> Data:
   qacc = d.qacc
   if not m.opt.disableflags & DisableBit.EULERDAMP:
     if support.is_sparse(m):
-      dh = d.replace(qM=d.qM.at[m.dof_Madr].add(m.opt.timestep * m.dof_damping))
+      qM = d._impl.qM.at[m.dof_Madr].add(m.opt.timestep * m.dof_damping)  # pytype: disable=attribute-error
     else:
-      dh = d.replace(qM=d.qM + jp.diag(m.opt.timestep * m.dof_damping))
+      qM = d._impl.qM + jp.diag(m.opt.timestep * m.dof_damping)  # pytype: disable=attribute-error
+    dh = d.tree_replace({'_impl.qM': qM})
     dh = smooth.factor_m(m, dh)
     qfrc = d.qfrc_smooth + d.qfrc_constraint
     qacc = smooth.solve_m(m, dh, qfrc)
@@ -398,7 +399,7 @@ def implicit(m: Model, d: Data) -> Data:
   qacc = d.qacc
   if qderiv is not None:
     # TODO(robotics-simulation): use smooth.factor_m / solve_m here:
-    qm = support.full_m(m, d) if support.is_sparse(m) else d.qM
+    qm = support.full_m(m, d) if support.is_sparse(m) else d._impl.qM  # pytype: disable=attribute-error
     qm -= m.opt.timestep * qderiv
     qh, _ = jax.scipy.linalg.cho_factor(qm)
     qfrc = d.qfrc_smooth + d.qfrc_constraint
@@ -418,7 +419,7 @@ def forward(m: Model, d: Data) -> Data:
   d = fwd_acceleration(m, d)
   d = sensor.sensor_acc(m, d)
 
-  if d.efc_J.size == 0:
+  if d._impl.efc_J.size == 0:  # pytype: disable=attribute-error
     d = d.replace(qacc=d.qacc_smooth)
     return d
 

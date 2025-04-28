@@ -27,6 +27,7 @@ from mujoco.mjx._src.types import DisableBit
 from mujoco.mjx._src.types import Model
 from mujoco.mjx._src.types import ObjType
 from mujoco.mjx._src.types import SensorType
+from mujoco.mjx._src.types import TrnType
 # pylint: enable=g-importing-member
 import numpy as np
 
@@ -168,9 +169,9 @@ def sensor_pos(m: Model, d: Data) -> Data:
     elif sensor_type == SensorType.JOINTPOS:
       sensor = d.qpos[m.jnt_qposadr[objid]]
     elif sensor_type == SensorType.TENDONPOS:
-      sensor = d.ten_length[objid]
+      sensor = d._impl.ten_length[objid]  # pytype: disable=attribute-error
     elif sensor_type == SensorType.ACTUATORPOS:
-      sensor = d.actuator_length[objid]
+      sensor = d._impl.actuator_length[objid]  # pytype: disable=attribute-error
     elif sensor_type == SensorType.BALLQUAT:
       jnt_qposadr = m.jnt_qposadr[objid, None] + np.arange(4)[None]
       quat = d.qpos[jnt_qposadr]
@@ -332,9 +333,9 @@ def sensor_vel(m: Model, d: Data) -> Data:
     elif sensor_type == SensorType.JOINTVEL:
       sensor = d.qvel[m.jnt_dofadr[objid]]
     elif sensor_type == SensorType.TENDONVEL:
-      sensor = d.ten_velocity[objid]
+      sensor = d._impl.ten_velocity[objid]  # pytype: disable=attribute-error
     elif sensor_type == SensorType.ACTUATORVEL:
-      sensor = d.actuator_velocity[objid]
+      sensor = d._impl.actuator_velocity[objid]  # pytype: disable=attribute-error
     elif sensor_type == SensorType.BALLANGVEL:
       jnt_dotadr = m.jnt_dofadr[objid, None] + np.arange(3)[None]
       sensor = d.qvel[jnt_dotadr]
@@ -361,7 +362,7 @@ def sensor_vel(m: Model, d: Data) -> Data:
           pos, _, bodyid = objtype_data[otype]
           pos = pos[oid]
           bodyid = bodyid[oid]
-          return d.cvel[bodyid], pos - d.subtree_com[m.body_rootid[bodyid]]
+          return d.cvel[bodyid], pos - d.subtree_com[m.body_rootid[bodyid]]  # pytype: disable=attribute-error
 
         cvel, offset = _cvel_offset(ot, objidt)
         cvelref, offsetref = _cvel_offset(rt, refidt)
@@ -396,10 +397,10 @@ def sensor_vel(m: Model, d: Data) -> Data:
         adrs.append(adrt.reshape(-1))
       continue  # avoid adding to sensors/adrs list a second time
     elif sensor_type == SensorType.SUBTREELINVEL:
-      sensor = d.subtree_linvel[objid]
+      sensor = d._impl.subtree_linvel[objid]  # pytype: disable=attribute-error
       adr = (adr[:, None] + np.arange(3)[None]).reshape(-1)
     elif sensor_type == SensorType.SUBTREEANGMOM:
-      sensor = d.subtree_angmom[objid]
+      sensor = d._impl.subtree_angmom[objid]  # pytype: disable=attribute-error
       adr = (adr[:, None] + np.arange(3)[None]).reshape(-1)
     else:
       # TODO(taylorhowell): raise error after adding sensor check to io.py
@@ -459,14 +460,14 @@ def sensor_acc(m: Model, d: Data) -> Data:
       # compute contact forces
       forces = []
       condim_ids = []
-      for dim in set(d.contact.dim):
+      for dim in set(d._impl.contact.dim):  # pytype: disable=attribute-error
         force, condim_id = support.contact_force_dim(m, d, dim)
         forces.append(force)
         condim_ids.append(condim_id)
       forces = jp.concatenate(forces)[np.argsort(np.concatenate(condim_ids))]
 
       # get bodies of contact geoms
-      conbody = jp.array(m.geom_bodyid)[d.contact.geom]
+      conbody = jp.array(m.geom_bodyid)[d._impl.contact.geom]  # pytype: disable=attribute-error
 
       # get site information
       site_bodyid = m.site_bodyid[objid]
@@ -476,12 +477,14 @@ def sensor_acc(m: Model, d: Data) -> Data:
       site_type = m.site_type[objid]
       conbody0 = site_bodyid[:, None] == conbody[:, 0]
       conbody1 = site_bodyid[:, None] == conbody[:, 1]
-      contacts = (d.contact.efc_address >= 0)[None] & (conbody0 | conbody1)
+      contacts = (d._impl.contact.efc_address >= 0)[None] & (conbody0 | conbody1)  # pytype: disable=attribute-error
 
       # compute conray, flip if second body
       conray = jax.vmap(
           lambda frame, force: math.normalize(frame[0] * force[0])
-      )(d.contact.frame, forces)
+      )(
+          d._impl.contact.frame, forces  # pytype: disable=attribute-error
+      )
       conray = jp.where(conbody1[..., None], -conray, conray)
 
       # compute distance, mapping over sites and contacts
@@ -503,7 +506,7 @@ def sensor_acc(m: Model, d: Data) -> Data:
             site_xpos[dist_id_site],
             site_xmat[dist_id_site],
             st,
-            d.contact.pos,
+            d._impl.contact.pos,  # pytype: disable=attribute-error
             conray[dist_id_site],
         )
         dist.append(jp.where(jp.isinf(dist_site), 0, dist_site))
@@ -525,14 +528,14 @@ def sensor_acc(m: Model, d: Data) -> Data:
       bodyid = m.site_bodyid[objid]
       rot = d.site_xmat[objid]
       cvel = d.cvel[bodyid]
-      cacc = d.cacc[bodyid]
+      cacc = d._impl.cacc[bodyid]  # pytype: disable=attribute-error
       dif = d.site_xpos[objid] - d.subtree_com[m.body_rootid[bodyid]]
 
       sensor = _accelerometer(cvel, cacc, dif, rot)
       adr = (adr[:, None] + np.arange(3)[None]).reshape(-1)
     elif sensor_type == SensorType.FORCE:
       bodyid = m.site_bodyid[objid]
-      cfrc_int = d.cfrc_int[bodyid]
+      cfrc_int = d._impl.cfrc_int[bodyid]  # pytype: disable=attribute-error
       site_xmat = d.site_xmat[objid]
       sensor = jax.vmap(lambda mat, vec: mat.T @ vec)(
           site_xmat, cfrc_int[:, 3:]
@@ -541,7 +544,7 @@ def sensor_acc(m: Model, d: Data) -> Data:
     elif sensor_type == SensorType.TORQUE:
       bodyid = m.site_bodyid[objid]
       rootid = m.body_rootid[bodyid]
-      cfrc_int = d.cfrc_int[bodyid]
+      cfrc_int = d._impl.cfrc_int[bodyid]  # pytype: disable=attribute-error
       site_xmat = d.site_xmat[objid]
       dif = d.site_xpos[objid] - d.subtree_com[rootid]
       sensor = jax.vmap(
@@ -552,6 +555,15 @@ def sensor_acc(m: Model, d: Data) -> Data:
       sensor = d.actuator_force[objid]
     elif sensor_type == SensorType.JOINTACTFRC:
       sensor = d.qfrc_actuator[m.jnt_dofadr[objid]]
+    elif sensor_type == SensorType.TENDONACTFRC:
+      force_mask = [
+          (m.actuator_trntype == TrnType.TENDON)
+          & (m.actuator_trnid[:, 0] == tendon_id)
+          for tendon_id in objid
+      ]
+      force_ids = np.concatenate([np.nonzero(mask)[0] for mask in force_mask])
+      force_mat = np.array(force_mask)[:, force_ids]
+      sensor = force_mat @ d.actuator_force[force_ids]
     elif sensor_type in (SensorType.FRAMELINACC, SensorType.FRAMEANGACC):
       objtype = m.sensor_objtype[idx]
 
@@ -561,7 +573,7 @@ def sensor_acc(m: Model, d: Data) -> Data:
         pos, bodyid = objtype_data[ot]
         pos = pos[objidt]
         bodyid = bodyid[objidt]
-        cacc = d.cacc[bodyid]
+        cacc = d._impl.cacc[bodyid]  # pytype: disable=attribute-error
 
         if sensor_type == SensorType.FRAMELINACC:
 

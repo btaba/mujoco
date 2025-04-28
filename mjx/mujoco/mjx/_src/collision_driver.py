@@ -113,6 +113,15 @@ _COLLISION_FUNC = {
 _GEOM_NO_BROADPHASE = {GeomType.HFIELD, GeomType.PLANE}
 
 
+# copybara:strip_begin
+def has_cuda_device_enabled():
+  dev = jax.devices()[0]
+  return 'gpu' == dev.platform and 'cuda' in dev.client.platform_version.lower()
+
+
+# copybara:strip_end
+
+
 def has_collision_fn(t1: GeomType, t2: GeomType) -> bool:
   """Returns True if a collision function exists for a pair of geom types."""
   return (t1, t2) in _COLLISION_FUNC
@@ -223,11 +232,21 @@ def _geom_groups(
       condim = max(m.geom_condim[g1], m.geom_condim[g2])
 
     key = FunctionKey(types, data_ids, condim)
+    # copybara:strip_begin
+    if (
+        has_cuda_device_enabled()
+        and os.environ.get('MJX_CUDA_COLLISION_NARROWPHASE', 'False').lower()
+        == 'true'
+        and key.types[0] in (GeomType.BOX.value, GeomType.MESH.value)
+        and key.types[1] == GeomType.MESH.value
+    ):
+      key = FunctionKey(types, (-1, -1), condim)
+    # copybara:strip_end
 
     if types[0] == mujoco.mjtGeom.mjGEOM_HFIELD:
       # add static grid bounds to the grouping key for hfield collisions
       geom_rbound_hfield = (
-          m.geom_rbound_hfield if isinstance(m, Model) else m.geom_rbound
+          m._impl.geom_rbound_hfield if isinstance(m, Model) else m.geom_rbound  # pytype: disable=attribute-error
       )
       nrow, ncol = m.hfield_nrow[data_ids[0]], m.hfield_ncol[data_ids[0]]
       xsize, ysize = m.hfield_size[data_ids[0]][:2]
@@ -323,11 +342,11 @@ def _contact_groups(m: Model, d: Data) -> Dict[FunctionKey, Contact]:
         solref=solref,
         solreffriction=solreffriction,
         solimp=solimp,
-        dim=d.contact.dim,
+        dim=d._impl.contact.dim,  # pytype: disable=attribute-error
         geom1=jp.array(geom[:, 0]),
         geom2=jp.array(geom[:, 1]),
         geom=jp.array(geom[:, :2]),
-        efc_address=d.contact.efc_address,
+        efc_address=d._impl.contact.efc_address,  # pytype: disable=attribute-error
     )
 
   return groups
@@ -374,11 +393,33 @@ def make_condim(m: Union[Model, mujoco.MjModel]) -> np.ndarray:
 
 def collision(m: Model, d: Data) -> Data:
   """Collides geometries."""
-  if d.ncon == 0:
+  if d._impl.ncon == 0:  # pytype: disable=attribute-error
     return d
 
   max_geom_pairs = _numeric(m, 'max_geom_pairs')
   max_contact_points = _numeric(m, 'max_contact_points')
+
+  # copybara:strip_begin
+  if (
+      has_cuda_device_enabled()
+      and os.environ.get('MJX_CUDA_COLLISION_FULL', 'False').lower() == 'true'
+  ):
+    import logging  # pylint: disable=g-import-not-at-top
+    from mujoco.mjx.google.cuda import engine_collision_driver  # pylint: disable=g-import-not-at-top
+
+    logging.info('Using full CUDA collision pipeline.')
+    contact = engine_collision_driver.collision(
+        m,
+        d,
+        depth_extension=0.25,
+        gjk_iter=12,
+        epa_iter=12,
+        epa_best_count=12,
+        multi_polygon_count=8,
+        multi_tilt_angle=1.0,
+    )
+    return d.replace(contact=contact)
+  # copybara:strip_end
 
   # run collision functions on groups
   groups = _contact_groups(m, d)
@@ -399,6 +440,41 @@ def collision(m: Model, d: Data) -> Data:
     # run the collision function specified by the grouping key
     func = _COLLISION_FUNC[key.types]
     ncon = func.ncon  # pytype: disable=attribute-error
+
+    # copybara:strip_begin
+    if (
+        has_cuda_device_enabled()
+        and os.environ.get('MJX_CUDA_COLLISION_NARROWPHASE', 'False').lower()
+        == 'true'
+        and key.types[0] in (GeomType.BOX.value, GeomType.MESH.value)
+        and key.types[1] == GeomType.MESH.value
+    ):
+      import logging  # pylint: disable=g-import-not-at-top
+      from mujoco.mjx.google.cuda import engine_collision_convex  # pylint: disable=g-import-not-at-top
+      from mujoco.mjx._src import math  # pylint: disable=g-import-not-at-top
+
+      logging.info('Using narrowphase CUDA collisions.')
+      dist, pos, n = engine_collision_convex.gjk_epa(
+          m,
+          d,
+          contact.geom,
+          key.types,
+          ncon=ncon,
+          ngeom=m.ngeom,
+          depth_extension=1e9,
+          gjk_iter=12,
+          epa_iter=12,
+          epa_best_count=12,
+          multi_polygon_count=8,
+          multi_tilt_angle=1.0,
+      )
+      contact = contact.replace(frame=jax.vmap(math.make_frame)(n))
+      if ncon > 1:
+        repeat_fn = lambda x, r=ncon: jp.repeat(x, r, axis=0)
+        contact = jax.tree_util.tree_map(repeat_fn, contact)
+      groups[key] = contact.replace(dist=dist, pos=pos)
+      continue
+    # copybara:strip_end
 
     dist, pos, frame = func(m, d, key, contact.geom)
     if ncon > 1:
@@ -424,4 +500,4 @@ def collision(m: Model, d: Data) -> Data:
   contacts = sum([condim_groups[k] for k in sorted(condim_groups)], [])
   contact = jax.tree_util.tree_map(lambda *x: jp.concatenate(x), *contacts)
 
-  return d.replace(contact=contact)
+  return d.replace(_impl=d._impl.replace(contact=contact))  # pytype: disable=attribute-error

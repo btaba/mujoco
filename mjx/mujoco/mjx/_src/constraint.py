@@ -314,9 +314,9 @@ def _efc_equality_tendon(m: Model, d: Data) -> Optional[_Efc]:
     return jax.tree_util.tree_map(lambda x: x * active, efc)
 
   inv1, inv2 = m.tendon_invweight0[obj1id], m.tendon_invweight0[obj2id]
-  jac1, jac2 = d.ten_J[obj1id], d.ten_J[obj2id]
-  pos1 = d.ten_length[obj1id] - m.tendon_length0[obj1id]
-  pos2 = d.ten_length[obj2id] - m.tendon_length0[obj2id]
+  jac1, jac2 = d._impl.ten_J[obj1id], d._impl.ten_J[obj2id]  # pytype: disable=attribute-error
+  pos1 = d._impl.ten_length[obj1id] - m.tendon_length0[obj1id]  # pytype: disable=attribute-error
+  pos2 = d._impl.ten_length[obj2id] - m.tendon_length0[obj2id]  # pytype: disable=attribute-error
   invweight = inv1 + inv2 * (obj2id > -1)
 
   return rows(
@@ -326,8 +326,8 @@ def _efc_equality_tendon(m: Model, d: Data) -> Optional[_Efc]:
 
 def _efc_friction(m: Model, d: Data) -> Optional[_Efc]:
   """Calculates constraint rows for dof frictionloss."""
-  dof_id = np.nonzero(m.dof_hasfrictionloss)[0]
-  tendon_id = np.nonzero(m.tendon_hasfrictionloss)[0]
+  dof_id = np.nonzero(m._impl.dof_hasfrictionloss)[0]  # pytype: disable=attribute-error
+  tendon_id = np.nonzero(m._impl.tendon_hasfrictionloss)[0]  # pytype: disable=attribute-error
 
   size = dof_id.size + tendon_id.size
   if (m.opt.disableflags & DisableBit.FRICTIONLOSS) or (size == 0):
@@ -337,7 +337,7 @@ def _efc_friction(m: Model, d: Data) -> Optional[_Efc]:
   args_dof += (m.dof_solimp,)
   args_dof = jax.tree_util.tree_map(lambda x: x[dof_id], args_dof)
 
-  args_ten = (d.ten_J, m.tendon_frictionloss, m.tendon_invweight0)
+  args_ten = (d._impl.ten_J, m.tendon_frictionloss, m.tendon_invweight0)  # pytype: disable=attribute-error
   args_ten += (m.tendon_solref_fri, m.tendon_solimp_fri)
   args_ten = jax.tree_util.tree_map(lambda x: x[tendon_id], args_ten)
 
@@ -423,8 +423,8 @@ def _efc_limit_tendon(m: Model, d: Data) -> Optional[_Efc]:
   length, j, range_, margin, invweight, solref, solimp = jax.tree_util.tree_map(
       lambda x: x[tendon_id],
       (
-          d.ten_length,
-          d.ten_J,
+          d._impl.ten_length,  # pytype: disable=attribute-error
+          d._impl.ten_J,  # pytype: disable=attribute-error
           m.tendon_range,
           m.tendon_margin,
           m.tendon_invweight0,
@@ -447,7 +447,7 @@ def _efc_limit_tendon(m: Model, d: Data) -> Optional[_Efc]:
 def _efc_contact_frictionless(m: Model, d: Data) -> Optional[_Efc]:
   """Calculates constraint rows for frictionless contacts."""
 
-  con_id = np.nonzero(d.contact.dim == 1)[0]
+  con_id = np.nonzero(d._impl.contact.dim == 1)[0]  # pytype: disable=attribute-error
 
   if con_id.size == 0:
     return None
@@ -473,7 +473,7 @@ def _efc_contact_frictionless(m: Model, d: Data) -> Optional[_Efc]:
         jp.zeros_like(pos),
     )
 
-  contact = jax.tree_util.tree_map(lambda x: x[con_id], d.contact)
+  contact = jax.tree_util.tree_map(lambda x: x[con_id], d._impl.contact)  # pytype: disable=attribute-error
 
   return rows(contact)
 
@@ -481,7 +481,7 @@ def _efc_contact_frictionless(m: Model, d: Data) -> Optional[_Efc]:
 def _efc_contact_pyramidal(m: Model, d: Data, condim: int) -> Optional[_Efc]:
   """Calculates constraint rows for frictional pyramidal contacts."""
 
-  con_id = np.nonzero(d.contact.dim == condim)[0]
+  con_id = np.nonzero(d._impl.contact.dim == condim)[0]  # pytype: disable=attribute-error
 
   if con_id.size == 0:
     return None
@@ -518,7 +518,7 @@ def _efc_contact_pyramidal(m: Model, d: Data, condim: int) -> Optional[_Efc]:
         jp.zeros_like(pos),
     )
 
-  contact = jax.tree_util.tree_map(lambda x: x[con_id], d.contact)
+  contact = jax.tree_util.tree_map(lambda x: x[con_id], d._impl.contact)  # pytype: disable=attribute-error
   # concatenate to drop row grouping
   return jax.tree_util.tree_map(jp.concatenate, rows(contact))
 
@@ -526,7 +526,7 @@ def _efc_contact_pyramidal(m: Model, d: Data, condim: int) -> Optional[_Efc]:
 def _efc_contact_elliptic(m: Model, d: Data, condim: int) -> Optional[_Efc]:
   """Calculates constraint rows for frictional elliptic contacts."""
 
-  con_id = np.nonzero(d.contact.dim == condim)[0]
+  con_id = np.nonzero(d._impl.contact.dim == condim)[0]  # pytype: disable=attribute-error
 
   if con_id.size == 0:
     return None
@@ -563,7 +563,7 @@ def _efc_contact_elliptic(m: Model, d: Data, condim: int) -> Optional[_Efc]:
         jp.zeros_like(pos),
     )
 
-  contact = jax.tree_util.tree_map(lambda x: x[con_id], d.contact)
+  contact = jax.tree_util.tree_map(lambda x: x[con_id], d._impl.contact)  # pytype: disable=attribute-error
   # concatenate to drop row grouping
   return jax.tree_util.tree_map(jp.concatenate, rows(contact))
 
@@ -602,13 +602,13 @@ def make_efc_type(
 
   if not m.opt.disableflags & DisableBit.FRICTIONLOSS:
     nf_dof = (
-        m.dof_hasfrictionloss.sum()
+        m._impl.dof_hasfrictionloss.sum()  # pytype: disable=attribute-error
         if isinstance(m, Model)
         else (m.dof_frictionloss > 0).sum()
     )
     efc_types += [ConstraintType.FRICTION_DOF] * nf_dof
     nf_tendon = (
-        m.tendon_hasfrictionloss.sum()
+        m._impl.tendon_hasfrictionloss.sum()  # pytype: disable=attribute-error
         if isinstance(m, Model)
         else (m.tendon_frictionloss > 0).sum()
     )
@@ -683,10 +683,14 @@ def make_constraint(m: Model, d: Data) -> Data:
 
   if not efcs:
     z = jp.empty(0)
-    d = d.replace(efc_J=jp.empty((0, m.nv)))
-    d = d.replace(
-        efc_D=z, efc_aref=z, efc_frictionloss=z, efc_pos=z, efc_margin=z
-    )
+    d = d.tree_replace({'_impl.efc_J': jp.empty((0, m.nv))})
+    d = d.tree_replace({
+        '_impl.efc_D': z,
+        '_impl.efc_aref': z,
+        '_impl.efc_frictionloss': z,
+        '_impl.efc_pos': z,
+        '_impl.efc_margin': z,
+    })
     return d
 
   efc = jax.tree_util.tree_map(lambda *x: jp.concatenate(x), *efcs)
@@ -699,9 +703,13 @@ def make_constraint(m: Model, d: Data) -> Data:
     return aref, r, efc.pos_aref + efc.margin, efc.margin, efc.frictionloss
 
   aref, r, pos, margin, frictionloss = fn(efc)
-  d = d.replace(
-      efc_J=efc.J, efc_D=1 / r, efc_aref=aref, efc_pos=pos, efc_margin=margin
-  )
-  d = d.replace(efc_frictionloss=frictionloss)
+  d = d.tree_replace({
+      '_impl.efc_J': efc.J,
+      '_impl.efc_D': 1 / r,
+      '_impl.efc_aref': aref,
+      '_impl.efc_pos': pos,
+      '_impl.efc_margin': margin,
+  })
+  d = d.tree_replace({'_impl.efc_frictionloss': frictionloss})
 
   return d

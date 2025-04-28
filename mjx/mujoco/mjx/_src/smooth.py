@@ -21,7 +21,6 @@ from mujoco.mjx._src import math
 from mujoco.mjx._src import scan
 from mujoco.mjx._src import support
 # pylint: disable=g-importing-member
-from mujoco.mjx._src.types import BackendImpl
 from mujoco.mjx._src.types import CamLightType
 from mujoco.mjx._src.types import Data
 from mujoco.mjx._src.types import DisableBit
@@ -33,136 +32,9 @@ from mujoco.mjx._src.types import WrapType
 # pylint: enable=g-importing-member
 import numpy as np
 
-import warp as wp
-import mujoco_warp as mjwarp
-from warp.jax_experimental.ffi import jax_callable
-
-
-
-
-"""
-import jax
-import jax.numpy as jp
-import warp as wp
-from warp.jax_experimental.ffi import jax_callable
-
-@wp.kernel
-def scale_kernel(a: wp.array2d(dtype=float), s: wp.array2d(dtype=float), output: wp.array2d(dtype=float)):
-    wid, tid = wp.tid()
-    output[wid, tid] = a[wid, tid] * s
-
-def example_func(
-    a: wp.array2d(dtype=float),
-    s: float,
-    c: wp.array2d(dtype=float),
-):
-  wp.launch(scale_kernel, dim=a.shape, inputs=[a, s], outputs=[c])
-
-def jax_func(a: jax.Array, s: float):
-  jf = jax_callable(example_func, num_outputs=1, vmap_method="expand_dims")
-  return jf(a, s)
-
-c = jax.jit(jax_func, static_argnums=(1,))(jp.ones((10, 10)), 2)  # works!
-c = jax.jit(jax.vmap(jax_func, in_axes=(0, None)), static_argnums=(1,))(jp.ones((10, 10, 10)), 2)  # does not work
-"""
-
-
-"""
-nworld = 4
-m = mujoco.MjModel.from_xml_path('./mujoco/mjx/test_data/humanoid/humanoid.xml')
-mjwarp_kinematics_jax = jax_callable(
-  mjwarp._src.smooth.kinematics_,
-  num_outputs=11,
-  output_dims={
-    "xpos": (nworld, m.nbody, 3),
-    "xquat": (nworld, m.nbody, 4),
-    "xmat": (nworld, m.nbody, 3, 3),
-    "xipos": (nworld, m.nbody, 3),
-    "ximat": (nworld, m.nbody, 3, 3),
-    "xanchor": (nworld, m.njnt, 3),
-    "xaxis": (nworld, m.njnt, 3),
-    "geom_xpos": (nworld, m.ngeom, 3),
-    "geom_xmat": (nworld, m.ngeom, 3, 3),
-    "site_xpos": (nworld, m.nsite, 3),
-    "site_xmat": (nworld, m.nsite, 3, 3),
-  }
-)
-
-# TODO(btaba): do not use custom_vmap, jax_callable FFI should work more seamlessly with vmap...
-def _kinematics_warp(m: Model, d: Data, nworld: int) -> Data:
-  # mjwarp_kinematics_jax = jax_callable(
-  #   mjwarp._src.smooth.kinematics_,
-  #   num_outputs=11,
-  #   output_dims={
-  #     "xpos": (nworld, m.nbody, 3),
-  #     "xquat": (nworld, m.nbody, 4),
-  #     "xmat": (nworld, m.nbody, 3, 3),
-  #     "xipos": (nworld, m.nbody, 3),
-  #     "ximat": (nworld, m.nbody, 3, 3),
-  #     "xanchor": (nworld, m.njnt, 3),
-  #     "xaxis": (nworld, m.njnt, 3),
-  #     "geom_xpos": (nworld, m.ngeom, 3),
-  #     "geom_xmat": (nworld, m.ngeom, 3, 3),
-  #     "site_xpos": (nworld, m.nsite, 3),
-  #     "site_xmat": (nworld, m.nsite, 3, 3),
-  #   }
-  # )
-  out = mjwarp_kinematics_jax(
-    m._blob.body_tree.numpy(),
-    m.qpos0,
-    m.body_parentid,
-    m.body_jntadr,
-    m.body_jntnum,
-    m.body_pos,
-    m.body_quat,
-    m.body_ipos,
-    m.body_iquat,
-    m._blob.body_treeadr.numpy(),
-    m.jnt_type,
-    m.jnt_qposadr,
-    m.jnt_pos,
-    m.jnt_axis,
-    m.geom_bodyid,
-    m.geom_pos,
-    m.geom_quat,
-    m.site_bodyid,
-    m.site_pos,
-    m.site_quat,
-    # Data Inputs
-    jp.expand_dims(d.qpos, axis=0) if nworld == 1 else d.qpos,
-  )
-  d = d.replace(
-    xpos=jp.squeeze(out[0], axis=0) if nworld == 1 else out[0],
-    xquat=jp.squeeze(out[1], axis=0) if nworld == 1 else out[1],
-    xmat=jp.squeeze(out[2], axis=0) if nworld == 1 else out[2],
-    xipos=jp.squeeze(out[3], axis=0) if nworld == 1 else out[3],
-    ximat=jp.squeeze(out[4], axis=0) if nworld == 1 else out[4],
-    xanchor=jp.squeeze(out[5], axis=0) if nworld == 1 else out[5],
-    xaxis=jp.squeeze(out[6], axis=0) if nworld == 1 else out[6],
-    geom_xpos=jp.squeeze(out[7], axis=0) if nworld == 1 else out[7],
-    geom_xmat=jp.squeeze(out[8], axis=0) if nworld == 1 else out[8],
-    site_xpos=jp.squeeze(out[9], axis=0) if nworld == 1 else out[9],
-    site_xmat=jp.squeeze(out[10], axis=0) if nworld == 1 else out[10],
-  )
-  return d
-
-
-@jax.custom_batching.custom_vmap
-def kinematics_warp(m: Model, d: Data) -> Data:
-  # d = _kinematics_warp(m, d, 1)
-  return d
-
-
-@kinematics_warp.def_vmap
-def kinematics_warp_vmap(axis_size, in_batched, m: Model, d: Data) -> Data:
-  assert d.qpos.shape[0] == axis_size and d.qpos.shape[1] == m.nq, (d.qpos.shape, (axis_size, m.nq))
-  return _kinematics_warp(m, d, axis_size), in_batched[1]
-"""
 
 def kinematics(m: Model, d: Data) -> Data:
   """Converts position/velocity from generalized coordinates to maximal."""
-  # if m._backend_impl == BackendImpl.WARP:
-  #   return kinematics_warp(m, d)
 
   def fn(carry, jnt_typs, jnt_pos, jnt_axis, qpos, qpos0, pos, quat):
     # calculate joint anchors, axes, body pos and quat in global frame
@@ -290,7 +162,7 @@ def com_pos(m: Model, d: Data) -> Data:
   root_com = subtree_com[m.body_rootid]
   offset = d.xipos - root_com
   cinert = inert_com(m.body_inertia, d.ximat, offset, m.body_mass)
-  d = d.replace(cinert=cinert)
+  d = d.tree_replace({'_impl.cinert': cinert})
 
   # map motion dofs to global frame centered at subtree_com
   def cdof_fn(jnt_typs, root_com, xmat, xanchor, xaxis):
@@ -329,7 +201,7 @@ def com_pos(m: Model, d: Data) -> Data:
       d.xanchor,
       d.xaxis,
   )
-  d = d.replace(cdof=cdof)
+  d = d.tree_replace({'_impl.cdof': cdof})
 
   return d
 
@@ -412,17 +284,14 @@ def crb(m: Model, d: Data) -> Data:
       crb_body += crb_child
     return crb_body
 
-  crb_body = scan.body_tree(m, crb_fn, 'b', 'b', d.cinert, reverse=True)
+  crb_body = scan.body_tree(m, crb_fn, 'b', 'b', d._impl.cinert, reverse=True)  # pytype: disable=attribute-error
   crb_body = crb_body.at[0].set(0.0)
-  d = d.replace(crb=crb_body)
+  d = d.tree_replace({'_impl.crb': crb_body})
 
   crb_dof = jp.take(crb_body, jp.array(m.dof_bodyid), axis=0)
-  crb_cdof = jax.vmap(math.inert_mul)(crb_dof, d.cdof)
-  qm = support.make_m(m, crb_cdof, d.cdof, m.dof_armature)
-  d = d.replace(qM=qm)
-  if support.is_sparse(m) and d._qM_sparse.size > 0:  # pylint: disable=protected-access
-    d = d.replace(_qM_sparse=qm)
-
+  crb_cdof = jax.vmap(math.inert_mul)(crb_dof, d._impl.cdof)  # pytype: disable=attribute-error
+  qm = support.make_m(m, crb_cdof, d._impl.cdof, m.dof_armature)  # pytype: disable=attribute-error
+  d = d.tree_replace({'_impl.qM': qm})
   return d
 
 
@@ -430,8 +299,8 @@ def factor_m(m: Model, d: Data) -> Data:
   """Gets factorizaton of inertia-like matrix M, assumed spd."""
 
   if not support.is_sparse(m):
-    qh, _ = jax.scipy.linalg.cho_factor(d.qM)
-    d = d.replace(qLD=qh)
+    qh, _ = jax.scipy.linalg.cho_factor(d._impl.qM)  # pytype: disable=attribute-error
+    d = d.tree_replace({'_impl.qLD': qh})
     return d
 
   # build up indices for where we will do backwards updates over qLD
@@ -453,7 +322,7 @@ def factor_m(m: Model, d: Data) -> Data:
           (out_beg, out_end, madr_d, madr_ij)
       )
 
-  qld = d.qM
+  qld = d._impl.qM  # pytype: disable=attribute-error
 
   for _, updates in sorted(updates.items(), reverse=True):
     # combine the updates into one update batch (per depth level)
@@ -481,12 +350,7 @@ def factor_m(m: Model, d: Data) -> Data:
   qld_diag = qld[m.dof_Madr]
   qld = (qld / qld[jp.array(madr_ds)]).at[m.dof_Madr].set(qld_diag)
 
-  d = d.replace(qLD=qld, qLDiagInv=1 / qld_diag)
-  if d._qLD_sparse.size > 0:  # pylint: disable=protected-access
-    d = d.replace(_qLD_sparse=d.qLD)
-  if d._qLDiagInv_sparse.size > 0:  # pylint: disable=protected-access
-    d = d.replace(_qLDiagInv_sparse=d.qLDiagInv)
-
+  d = d.tree_replace({'_impl.qLD': qld, '_impl.qLDiagInv': 1 / qld_diag})
   return d
 
 
@@ -494,7 +358,7 @@ def solve_m(m: Model, d: Data, x: jax.Array) -> jax.Array:
   """Computes sparse backsubstitution:  x = inv(L'*D*L)*y ."""
 
   if not support.is_sparse(m):
-    return jax.scipy.linalg.cho_solve((d.qLD, False), x)
+    return jax.scipy.linalg.cho_solve((d._impl.qLD, False), x)  # pytype: disable=attribute-error
 
   depth = []
   for i in range(m.nv):
@@ -513,15 +377,15 @@ def solve_m(m: Model, d: Data, x: jax.Array) -> jax.Array:
   # x <- inv(L') * x
   for _, vals in sorted(updates_j.items(), reverse=True):
     j, madr_ij, i = np.array(vals).T
-    x = x.at[j].add(-d.qLD[madr_ij] * x[i])
+    x = x.at[j].add(-d._impl.qLD[madr_ij] * x[i])  # pytype: disable=attribute-error
 
   # x <- inv(D) * x
-  x = x * d.qLDiagInv
+  x = x * d._impl.qLDiagInv  # pytype: disable=attribute-error
 
   # x <- inv(L) * x
   for _, vals in sorted(updates_i.items()):
     i, madr_ij, j = np.array(vals).T
-    x = x.at[i].add(-d.qLD[madr_ij] * x[j])
+    x = x.at[i].add(-d._impl.qLD[madr_ij] * x[j])  # pytype: disable=attribute-error
 
   return x
 
@@ -559,11 +423,11 @@ def com_vel(m: Model, d: Data) -> Data:
       'jvv',
       'bv',
       m.jnt_type,
-      d.cdof,
+      d._impl.cdof,  # pytype: disable=attribute-error
       d.qvel,
   )
 
-  d = d.replace(cvel=cvel, cdof_dot=cdof_dot)
+  d = d.tree_replace({'cvel': cvel, '_impl.cdof_dot': cdof_dot})
 
   return d
 
@@ -657,7 +521,10 @@ def subtree_vel(m: Model, d: Data) -> Data:
       reverse=True,
   )
 
-  return d.replace(subtree_linvel=subtree_linvel, subtree_angmom=subtree_angmom)
+  return d.tree_replace({
+      '_impl.subtree_linvel': subtree_linvel,
+      '_impl.subtree_angmom': subtree_angmom,
+  })
 
 
 def rne(m: Model, d: Data, flg_acc: bool = False) -> Data:
@@ -683,7 +550,7 @@ def rne(m: Model, d: Data, flg_acc: bool = False) -> Data:
     return cacc
 
   cacc = scan.body_tree(
-      m, cacc_fn, 'vvvv', 'b', d.cdof_dot, d.qvel, d.cdof, d.qacc
+      m, cacc_fn, 'vvvv', 'b', d._impl.cdof_dot, d.qvel, d._impl.cdof, d.qacc  # pytype: disable=attribute-error
   )
 
   def frc(cinert, cacc, cvel):
@@ -692,7 +559,7 @@ def rne(m: Model, d: Data, flg_acc: bool = False) -> Data:
 
     return frc
 
-  loc_cfrc = jax.vmap(frc)(d.cinert, cacc, d.cvel)
+  loc_cfrc = jax.vmap(frc)(d._impl.cinert, cacc, d.cvel)  # pytype: disable=attribute-error
 
   # backward scan up tree: accumulate body forces
   def cfrc_fn(cfrc_child, cfrc):
@@ -701,7 +568,7 @@ def rne(m: Model, d: Data, flg_acc: bool = False) -> Data:
     return cfrc
 
   cfrc = scan.body_tree(m, cfrc_fn, 'b', 'b', loc_cfrc, reverse=True)
-  qfrc_bias = jax.vmap(jp.dot)(d.cdof, cfrc[jp.array(m.dof_bodyid)])
+  qfrc_bias = jax.vmap(jp.dot)(d._impl.cdof, cfrc[jp.array(m.dof_bodyid)])  # pytype: disable=attribute-error
 
   d = d.replace(qfrc_bias=qfrc_bias)
 
@@ -730,7 +597,7 @@ def rne_postconstraint(m: Model, d: Data) -> Data:
   # compute contact forces for each condim
   forces = []
   condim_idx = []
-  for dim in set(d.contact.dim):
+  for dim in set(d._impl.contact.dim):  # pytype: disable=attribute-error
     force, idx = support.contact_force_dim(m, d, dim)
     forces.append(force)
     condim_idx.append(idx)
@@ -757,10 +624,10 @@ def rne_postconstraint(m: Model, d: Data) -> Data:
       )
 
     condim_idx = jp.concatenate(condim_idx)
-    frame = d.contact.frame[condim_idx]
-    pos = d.contact.pos[condim_idx]
-    id1 = jp.array(m.geom_bodyid)[d.contact.geom[condim_idx, 0]]
-    id2 = jp.array(m.geom_bodyid)[d.contact.geom[condim_idx, 1]]
+    frame = d._impl.contact.frame[condim_idx]  # pytype: disable=attribute-error
+    pos = d._impl.contact.pos[condim_idx]  # pytype: disable=attribute-error
+    id1 = jp.array(m.geom_bodyid)[d._impl.contact.geom[condim_idx, 0]]  # pytype: disable=attribute-error
+    id2 = jp.array(m.geom_bodyid)[d._impl.contact.geom[condim_idx, 1]]  # pytype: disable=attribute-error
     com1 = d.subtree_com[jp.array(m.body_rootid)][id1]
     com2 = d.subtree_com[jp.array(m.body_rootid)][id2]
 
@@ -796,8 +663,8 @@ def rne_postconstraint(m: Model, d: Data) -> Data:
     )
 
     # cacc = cacc_parent + cdofdot * qvel + cdof * qacc
-    cacc_vel = d.cdof_dot.T @ (mask * d.qvel)
-    cacc_acc = d.cdof.T @ (mask * d.qacc)
+    cacc_vel = d._impl.cdof_dot.T @ (mask * d.qvel)  # pytype: disable=attribute-error
+    cacc_acc = d._impl.cdof.T @ (mask * d.qacc)  # pytype: disable=attribute-error
     cacc = cacc_parent + cacc_vel + cacc_acc
 
     # cfrc_body = cinert * cacc + cvel x (cinert * cvel)
@@ -815,7 +682,7 @@ def rne_postconstraint(m: Model, d: Data) -> Data:
       'bbbbb',
       'bb',
       cfrc_ext,
-      d.cinert,
+      d._impl.cinert,  # pytype: disable=attribute-error
       d.cvel,
       jp.array(m.body_dofadr),
       jp.array(m.body_dofnum),
@@ -832,7 +699,11 @@ def rne_postconstraint(m: Model, d: Data) -> Data:
   )
 
   # update data
-  return d.replace(cacc=cacc, cfrc_int=cfrc_int, cfrc_ext=cfrc_ext)
+  return d.tree_replace({
+      '_impl.cacc': cacc,
+      '_impl.cfrc_int': cfrc_int,
+      '_impl.cfrc_ext': cfrc_ext,
+  })
 
 
 def tendon(m: Model, d: Data) -> Data:
@@ -964,8 +835,8 @@ def tendon(m: Model, d: Data) -> Data:
   # wrap inside
   # TODO(taylorhowell): check that is_wrap_inside is consistent with
   # site and geom relative positions
-  (wrap_inside_id,) = np.nonzero(m.is_wrap_inside)
-  (wrap_outside_id,) = np.nonzero(~m.is_wrap_inside)
+  (wrap_inside_id,) = np.nonzero(m._impl.is_wrap_inside)  # pytype: disable=attribute-error
+  (wrap_outside_id,) = np.nonzero(~m._impl.is_wrap_inside)  # pytype: disable=attribute-error
 
   # compute geom wrap length and connect points (if wrap occurs)
   v_wrap = jax.vmap(
@@ -981,9 +852,9 @@ def tendon(m: Model, d: Data) -> Data:
       has_sidesite[wrap_inside_id],
       is_sphere[wrap_inside_id],
       True,
-      m.wrap_inside_maxiter,
-      m.wrap_inside_tolerance,
-      m.wrap_inside_z_init,
+      m._impl.wrap_inside_maxiter,  # pytype: disable=attribute-error
+      m._impl.wrap_inside_tolerance,  # pytype: disable=attribute-error
+      m._impl.wrap_inside_z_init,  # pytype: disable=attribute-error
   )
 
   lengths_outside, pnt0_outside, pnt1_outside = v_wrap(
@@ -996,9 +867,9 @@ def tendon(m: Model, d: Data) -> Data:
       has_sidesite[wrap_outside_id],
       is_sphere[wrap_outside_id],
       False,
-      m.wrap_inside_maxiter,
-      m.wrap_inside_tolerance,
-      m.wrap_inside_z_init,
+      m._impl.wrap_inside_maxiter,  # pytype: disable=attribute-error
+      m._impl.wrap_inside_tolerance,  # pytype: disable=attribute-error
+      m._impl.wrap_inside_z_init,  # pytype: disable=attribute-error
   )
 
   wrap_id = np.argsort(np.concatenate([wrap_inside_id, wrap_outside_id]))
@@ -1080,12 +951,12 @@ def tendon(m: Model, d: Data) -> Data:
   )
 
   # assemble length and moment
-  ten_length = jp.zeros_like(d.ten_length).at[tendon_id_jnt].set(length_jnt)
+  ten_length = jp.zeros_like(d._impl.ten_length).at[tendon_id_jnt].set(length_jnt)  # pytype: disable=attribute-error
   ten_length = ten_length.at[tendon_id_site].add(length_site)
   ten_length = ten_length.at[tendon_id_geom].add(length_geom)
 
   ten_moment = (
-      jp.zeros_like(d.ten_J)
+      jp.zeros_like(d._impl.ten_J)  # pytype: disable=attribute-error
       .at[adr_moment_jnt, dofadr_moment_jnt]
       .set(moment_jnt)
   )
@@ -1148,14 +1019,14 @@ def tendon(m: Model, d: Data) -> Data:
       [wrap_obj[sort], jp.zeros(2 * m.nwrap - count, dtype=int)]
   ).reshape((m.nwrap, 2))
 
-  return d.replace(
-      ten_length=ten_length,
-      ten_J=ten_moment,
-      ten_wrapadr=jp.array(ten_wrapadr, dtype=int),
-      ten_wrapnum=jp.array(ten_wrapnum, dtype=int),
-      wrap_xpos=wrap_xpos,
-      wrap_obj=jp.array(wrap_obj, dtype=int),
-  )
+  return d.tree_replace({
+      '_impl.ten_length': ten_length,
+      '_impl.ten_J': ten_moment,
+      '_impl.ten_wrapadr': jp.array(ten_wrapadr, dtype=int),
+      '_impl.ten_wrapnum': jp.array(ten_wrapnum, dtype=int),
+      '_impl.wrap_xpos': wrap_xpos,
+      '_impl.wrap_obj': jp.array(wrap_obj, dtype=int),
+  })
 
 
 def _site_dof_mask(m: Model) -> np.ndarray:
@@ -1248,8 +1119,8 @@ def transmission(m: Model, d: Data) -> Data:
       wrench = jp.concatenate((frame_xmat @ gear[:3], frame_xmat @ gear[3:]))
       moment = jac @ wrench
     elif trntype == TrnType.TENDON:
-      length = d.ten_length[trnid[0]] * gear[:1]
-      moment = d.ten_J[trnid[0]] * gear[0]
+      length = d._impl.ten_length[trnid[0]] * gear[:1]  # pytype: disable=attribute-error
+      moment = d._impl.ten_J[trnid[0]] * gear[0]  # pytype: disable=attribute-error
     else:
       raise RuntimeError(f'unrecognized trntype: {TrnType(trntype)}')
 
@@ -1281,6 +1152,7 @@ def transmission(m: Model, d: Data) -> Data:
   length = length.reshape((m.nu,))
   moment = moment.reshape((m.nu, m.nv))
 
-  d = d.replace(actuator_length=length, actuator_moment=moment)
+  d = d.tree_replace(
+      {'_impl.actuator_length': length, '_impl.actuator_moment': moment}
+  )
   return d
-
