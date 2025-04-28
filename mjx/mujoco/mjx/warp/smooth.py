@@ -70,19 +70,19 @@ def _kinematics_shim(
     site_pos: wp.array(dtype=wp.vec3),
     site_quat: wp.array(dtype=wp.quat),
     # Data Inputs
-    qpos: wp.array2d(dtype=float),
+    qpos: wp.array1d(dtype=float),  # TODO(btaba): Parameter dims are misleading with vmap, should be fixed in Warp.
     # Data Outputs
-    xpos: wp.array2d(dtype=wp.vec3),
-    xquat: wp.array2d(dtype=wp.quat),
-    xmat: wp.array2d(dtype=wp.mat33),
-    xipos: wp.array2d(dtype=wp.vec3),
-    ximat: wp.array2d(dtype=wp.mat33),
-    xanchor: wp.array2d(dtype=wp.vec3),
-    xaxis: wp.array2d(dtype=wp.vec3),
-    geom_xpos: wp.array2d(dtype=wp.vec3),
-    geom_xmat: wp.array2d(dtype=wp.mat33),
-    site_xpos: wp.array2d(dtype=wp.vec3),
-    site_xmat: wp.array2d(dtype=wp.mat33),
+    xpos: wp.array1d(dtype=wp.vec3),
+    xquat: wp.array1d(dtype=wp.quat),
+    xmat: wp.array1d(dtype=wp.mat33),
+    xipos: wp.array1d(dtype=wp.vec3),
+    ximat: wp.array1d(dtype=wp.mat33),
+    xanchor: wp.array1d(dtype=wp.vec3),
+    xaxis: wp.array1d(dtype=wp.vec3),
+    geom_xpos: wp.array1d(dtype=wp.vec3),
+    geom_xmat: wp.array1d(dtype=wp.mat33),
+    site_xpos: wp.array1d(dtype=wp.vec3),
+    site_xmat: wp.array1d(dtype=wp.mat33),
 ):
   args = (
       body_tree,
@@ -123,28 +123,22 @@ def _kinematics_shim(
   annotations = tuple(mjwarp.kinematics_.__annotations__.items())
   for i in range(len(args)):
     expected_ndim = annotations[i][1].ndim
-    print('><>>>>>>>>>', annotations[i][0], args[i].ndim, args[i].shape, args[i].strides)
-    print('>>>>>>>> Expected', expected_ndim)
+    if expected_ndim < args[i].ndim:
+      # remove the expanded dims, this assumes we used `expand_dims` vmap_method
+      assert args[i].shape[0] == 1
+      new_args[i] = args[i].reshape(args[i].shape[args[i].ndim - expected_ndim:])
+      new_args[i].ndim = args[i].ndim - 1
+      continue
 
-    # # called without vmap
-    # if expected_ndim > args[i].ndim:
-    #   new_args[i] = args[i]
-    #   new_args[i].ndim += 1
-    #   new_args[i].shape = (1,) + new_args[i].shape
-    #   new_args[i].strides = (0,) + new_args[i].strides
-    #   continue
-
-    # called with vmap
-    new_args[i] = args[i].reshape((-1,) + args[i].shape[:expected_ndim])
-    new_args[i].ndim = expected_ndim
-
-    # TODO(btaba): handle expand_dims (1,)
-    # TODO(btaba): handle/test data batching
-    # TODO(btaba): handle/test model batching
-
-  # assert False
+    new_args[i] = args[i]
   # pytype: enable=attribute-error
-  mjwarp.kinematics_(*args)
+  mjwarp.kinematics_(*new_args)
+
+
+# wp.config.verbose = True
+# wp.config.print_launches = True
+# wp.config.mode = "debug"
+# wp.config.verify_cuda = True
 
 
 def kinematics(m: types.Model, d: types.Data) -> types.Data:
@@ -162,16 +156,13 @@ def kinematics(m: types.Model, d: types.Data) -> types.Data:
       'site_xpos': (m.nsite, 3),
       'site_xmat': (m.nsite, 3, 3),
   }
-  # if d.qpos.ndim == 1:  # add batch dim if it doesn't exist
-  #   for k in output_dims:
-  #     output_dims[k] = (1,) + output_dims[k]
-
   jf = warp_ffi.jax_callable(
       _kinematics_shim, num_outputs=11,
       output_dims=output_dims,
-      vmap_method='expand_dims')
+      vmap_method='expand_dims',
+      graph_compatible=True,
+    )
 
-  # qpos = jp.expand_dims(d.qpos, 0) if d.qpos.ndim == 1 else d.qpos
   out = jf(
       m.body_tree,
       m.qpos0,
@@ -195,9 +186,6 @@ def kinematics(m: types.Model, d: types.Data) -> types.Data:
       m.site_quat,
       d.qpos,
   )
-  # # remove batch dim if it was added
-  # if d.qpos.ndim == 1:
-  #   out = [jp.squeeze(x, 0) for x in out]
 
   d = d.replace(
       xpos=out[0],

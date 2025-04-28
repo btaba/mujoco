@@ -25,8 +25,8 @@ class OptionWarp(PyTreeNode):
 
   depth_extension: float
   epa_exact_neg_distance: bool
-  epa_iteration_count: int
-  gjk_iteration_count: int
+  epa_iterations: int
+  gjk_iterations: int
   is_sparse: bool
   ls_parallel: bool
 
