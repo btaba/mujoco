@@ -14,6 +14,8 @@
 # ==============================================================================
 """Core smooth dynamics functions."""
 
+from typing import assert_never
+
 import jax
 from jax import numpy as jp
 import mujoco
@@ -21,6 +23,7 @@ from mujoco.mjx._src import math
 from mujoco.mjx._src import scan
 from mujoco.mjx._src import support
 # pylint: disable=g-importing-member
+from mujoco.mjx._src.types import BackendImpl
 from mujoco.mjx._src.types import CamLightType
 from mujoco.mjx._src.types import Data
 from mujoco.mjx._src.types import DisableBit
@@ -30,11 +33,15 @@ from mujoco.mjx._src.types import Model
 from mujoco.mjx._src.types import TrnType
 from mujoco.mjx._src.types import WrapType
 # pylint: enable=g-importing-member
+from mujoco.mjx.warp import smooth as mjwarp_smooth
 import numpy as np
 
 
 def kinematics(m: Model, d: Data) -> Data:
   """Converts position/velocity from generalized coordinates to maximal."""
+  if m.backend_impl == BackendImpl.WARP:
+    assert d.backend_impl == BackendImpl.WARP
+    return mjwarp_smooth.kinematics(m, d)
 
   def fn(carry, jnt_typs, jnt_pos, jnt_axis, qpos, qpos0, pos, quat):
     # calculate joint anchors, axes, body pos and quat in global frame

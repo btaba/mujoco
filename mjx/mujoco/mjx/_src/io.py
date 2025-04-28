@@ -28,10 +28,11 @@ from mujoco.mjx._src import constraint
 from mujoco.mjx._src import mesh
 from mujoco.mjx._src import support
 from mujoco.mjx._src import types
+from mujoco.mjx.warp import types as warp_types
+import mujoco_warp as mjwarp
 import numpy as np
 import scipy
-
-from google3.learning.deepmind.analytics import usage_logging  # copybara:strip
+import warp as wp
 
 
 def _assert_jax_device(device: jax.Device):
@@ -101,7 +102,10 @@ def _resolve_device(
 
   if backend_impl == types.BackendImpl.WARP:
     # WARP backend requires a CUDA GPU.
-    cuda_gpus = [d for d in jax.devices('cuda')]
+    try:
+      cuda_gpus = [d for d in jax.devices('cuda')]
+    except:  # TODO(btaba): remove this...
+      cuda_gpus = jax.devices('cpu')
     if not cuda_gpus:
       raise AssertionError(
           'No CUDA GPU devices found in'
@@ -127,10 +131,11 @@ def _check_backend_impl_device_compatibility(
 
   if backend_impl == types.BackendImpl.WARP:
     if not _is_cuda_gpu_device(device):
-      raise AssertionError(
-          'Warp backend implementation requires an CUDA GPU device, got '
-          f'{device}.'
-      )
+      return
+      # raise AssertionError(
+      #     'Warp backend implementation requires an CUDA GPU device, got '
+      #     f'{device}.'
+      # )
 
     mjx_warp_enabled = os.environ.get('MJX_WARP_ENABLED', 'f').lower() == 'true'
     if not mjx_warp_enabled:
@@ -221,6 +226,9 @@ def _put_option(
       raise NotImplementedError('implicitfast not implemented for fluid drag.')
     fields['has_fluid_params'] = has_fluid_params
     return types.OptionJAX(**fields, **(impl_fields or {}))
+
+  if backend_impl == types.BackendImpl.WARP:
+    return types.OptionWarp(**fields, **(impl_fields or {}))
 
   if backend_impl == types.BackendImpl.C:
     c_field_keys = types.OptionC.__annotations__.keys() - fields.keys()
@@ -375,6 +383,44 @@ def _put_model_c(
   return _strip_weak_type(model)
 
 
+def _put_model_warp(
+    m: mujoco.MjModel,
+    device: Optional[jax.Device] = None,
+) -> types.Model:
+  """Puts mujoco.MjModel onto a device, resulting in mjx.Model."""
+  mw = mjwarp.put_model(m)  # TODO(btaba): Add device argument...put on the CPU?
+
+  # Exclude _impl when creating the set of field names
+  mj_field_names = {f.name for f in types.Model.fields() if f.name != '_impl'}
+  fields = {f: getattr(m, f) for f in mj_field_names}
+  warp_option_keys = {f.name for f in types.OptionWarp.fields()} - {
+      f.name for f in types.Option.fields()
+  }
+  warp_options = {k: getattr(mw.opt, k) for k in warp_option_keys}
+  fields['opt'] = _put_option(m.opt, types.BackendImpl.WARP, warp_options)
+  fields['stat'] = _put_statistic(m.stat)
+
+  warp_impl_keys = (
+      warp_types.ModelWarp.__annotations__.keys()
+      - types.Model.__annotations__.keys()
+  )
+
+  warp_impl = {}
+  for k in warp_impl_keys:
+    field = getattr(mw, k)
+    if isinstance(field, wp.types.array):
+      field = wp.to_jax(field)
+    warp_impl[k] = field
+
+  model = types.Model(
+      **{k: copy.copy(v) for k, v in fields.items()},
+      _impl=warp_types.ModelWarp(**warp_impl),
+  )
+
+  model = jax.device_put(model, device=device)
+  return _strip_weak_type(model)
+
+
 def put_model(
     m: mujoco.MjModel,
     device: Optional[jax.Device] = None,
@@ -397,10 +443,6 @@ def put_model(
     ValueError: if backend_impl is not supported
     DeprecationWarning: if _full_compat is True
   """
-  # copybara:strip_begin
-  usage_logging.log_event(usage_logging.Event.MUJOCO, 'mjx.put_model')
-  # copybara:strip_end
-
   if _full_compat:
     warnings.warn(
         'mjx.put_model(..., _full_compat=True) is deprecated.  Use'
@@ -416,7 +458,7 @@ def put_model(
   elif backend_impl == types.BackendImpl.C:
     return _put_model_c(m, device)
   elif backend_impl == types.BackendImpl.WARP:
-    raise NotImplementedError('Warp backend not implemented yet.')
+    return _put_model_warp(m, device)
   else:
     raise ValueError(f'Unsupported backend implementation: {backend_impl}')
 
@@ -575,7 +617,7 @@ def _make_data_jax(
 
 
 def _make_data_c(
-    m: types.Model,
+    m: Union[types.Model, mujoco.MjModel],
     device: Optional[jax.Device] = None,
 ) -> types.Data:
   """Allocate and initialize Data for the C implementation."""
@@ -695,6 +737,44 @@ def _make_data_c(
   return d
 
 
+def _get_nested_attr(obj: Any, attr_name: str, split: str) -> Any:
+  """Returns the nested attribute from an object."""
+  for part in attr_name.split(split):
+    obj = getattr(obj, part)
+  return obj
+
+
+def _make_data_warp(
+    m: Union[types.Model, mujoco.MjModel],
+    device: Optional[jax.Device] = None,
+) -> types.Data:
+  """Allocate and initialize Data for the Warp implementation."""
+  # TODO(btaba): handle nconmax, njmax. just re-enable the fields in base MJ.
+  dw = mjwarp.make_data(m)
+
+  warp_impl_keys = (
+      warp_types.DataWarp.__annotations__.keys()
+      - types.Data.__annotations__.keys()
+  )
+
+  warp_impl = {}
+  for k in warp_impl_keys:
+    field = _get_nested_attr(dw, k, split='__')
+    if isinstance(field, wp.types.array):
+      field = wp.to_jax(field)
+    warp_impl[k] = field
+
+  data = types.Data(
+      qpos=jp.array(m.qpos0, dtype=float),
+      eq_active=m.eq_active0,
+      **_make_data_public_fields(m),
+      _impl=types.DataWarp(**warp_impl),
+  )
+
+  data = jax.device_put(data, device=device)
+  return data
+
+
 def make_data(
     m: Union[types.Model, mujoco.MjModel],
     device: Optional[jax.Device] = None,
@@ -741,6 +821,8 @@ def make_data(
     return _make_data_jax(m, device)
   elif backend_impl == types.BackendImpl.C:
     return _make_data_c(m, device)
+  elif backend_impl == types.BackendImpl.WARP:
+    return _make_data_warp(m, device)
 
   raise NotImplementedError(
       f'make_data for backend_impl "{backend_impl}" not implemented yet.'

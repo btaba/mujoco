@@ -102,9 +102,16 @@ class ModelIOTest(parameterized.TestCase):
 
   @parameterized.product(
       xml=(_MULTIPLE_CONVEX_OBJECTS, _MULTIPLE_CONSTRAINTS),
-      backend_impl=('jax', 'c'),
+      backend_impl=('jax', 'c', 'warp'),
   )
+  @mock.patch.dict(os.environ, {'MJX_WARP_ENABLED': 'true'})
   def test_put_model(self, xml, backend_impl):
+    try:
+      import warp  # pylint: disable=g-import-not-at-top disable=unused-import
+      import mujoco_warp  # pylint: disable=g-import-not-at-top disable=unused-import
+    except ImportError:
+      self.skipTest('Warp library not available.')
+
     m = mujoco.MjModel.from_xml_string(xml)
     mx = mjx.put_model(m, backend_impl=backend_impl)
 
@@ -136,6 +143,11 @@ class ModelIOTest(parameterized.TestCase):
       self.assertEqual(mx.opt.apirate, m.opt.apirate)
       # Fields private to C backend impl are populated.
       self.assertTrue(hasattr(mx._impl, 'bvh_aabb'))
+    elif backend_impl == 'warp':
+      # Options specific to Warp are populated.
+      self.assertTrue(hasattr(mx.opt, 'is_sparse'))
+      # Fields private to Warp backend impl are populated.
+      self.assertTrue(hasattr(mx._impl, 'condim_max'))
 
     np.testing.assert_allclose(mx.body_parentid, m.body_parentid)
     np.testing.assert_allclose(mx.geom_type, m.geom_type)
@@ -320,6 +332,11 @@ class DataIOTest(parameterized.TestCase):
       # check C specific fields
       self.assertEqual(d._impl.light_xpos.shape, (m.nlight, 3))
       self.assertEqual(d._impl.bvh_active.shape, (m.nbvh,))
+
+  @mock.patch.dict(os.environ, {'MJX_WARP_ENABLED': 'true'})
+  def test_make_data_warp(self):
+    m = mujoco.MjModel.from_xml_string(_MULTIPLE_CONVEX_OBJECTS)
+    d = mjx.make_data(m, backend_impl='warp')
 
   @parameterized.parameters('jax', 'c')
   def test_put_data(self, backend_impl: str):
