@@ -13,9 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """mjWarp Smooth."""
-import inspect
-import functools
-import jax
 import jax.numpy as jp
 import warp as wp
 from warp.jax_experimental import ffi as warp_ffi
