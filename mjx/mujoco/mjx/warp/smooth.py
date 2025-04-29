@@ -108,16 +108,33 @@ def _kinematics_shim(
   annotations = tuple(mjwarp.kinematics_.__annotations__.items())
   for i in range(len(args)):
     expected_ndim = annotations[i][1].ndim
+
+    # remove the expanded dims, assuming we used the `expand_dims` vmap_method
     if expected_ndim < args[i].ndim:
       naxes = args[i].ndim - expected_ndim
-      # remove the expanded dims, this assumes we used `expand_dims` vmap_method
+      # check that we are squeezing size 1 axes only
       assert args[i].shape[:naxes] == (1,) * naxes
       new_args[i] = args[i].reshape(args[i].shape[naxes:])
       new_args[i].ndim = args[i].ndim - naxes
       continue
+
+    # add a batch dim for fields that were not vmapped
+    if expected_ndim > args[i].ndim:
+      extra_dims = expected_ndim - args[i].ndim
+      new_args[i] = args[i].reshape((1,) * extra_dims  + args[i].shape)
+      new_args[i].ndim = expected_ndim
+      continue
+
     new_args[i] = args[i]
+
   # pytype: enable=attribute-error
   mjwarp.kinematics_(*new_args)
+
+
+# wp.config.verbose = True
+# wp.config.print_launches = True
+# wp.config.mode = 'debug'
+# wp.config.verify_cuda = True
 
 
 def kinematics(m: types.Model, d: types.Data) -> types.Data:
@@ -140,8 +157,7 @@ def kinematics(m: types.Model, d: types.Data) -> types.Data:
       output_dims=output_dims,
       vmap_method='expand_dims',
       graph_compatible=True,
-    )
-
+  )
   out = jf(
       m.body_tree,
       m.qpos0,
