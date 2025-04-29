@@ -24,28 +24,6 @@ import mujoco_warp as mjwarp
 from mujoco.mjx._src import types
 
 
-# def _reshape_batch_dim(*args):
-#   # pytype: disable=attribute-error
-#   new_args = [None] * len(args)
-#   for i in range(len(args)):
-#     expected_ndim = mjwarp.kinematics_.adj[i].type.ndim
-#     new_args[i] = args[i].reshape((-1,) + args[i].shape[:expected_ndim])
-#     new_args[i].ndim = expected_ndim
-#   # pytype: enable=attribute-error
-#   return new_args
-
-
-# def _decorator(wrapped_func):
-#   sig = inspect.signature(wrapped_func)
-
-#   @functools.wraps(wrapped_func)
-#   def wrapper(*args):
-#     bound_args = sig.bind(*args)
-#     new_args_tuple = _reshape_batch_dim(bound_args)
-#     return wrapped_func(*new_args_tuple)
-#   return wrapper
-
-
 def _kinematics_shim(
     # Model Inputs
     body_tree: wp.array(dtype=int),
@@ -69,8 +47,12 @@ def _kinematics_shim(
     site_bodyid: wp.array(dtype=int),
     site_pos: wp.array(dtype=wp.vec3),
     site_quat: wp.array(dtype=wp.quat),
+    mocap_bodyid: wp.array(dtype=int),
     # Data Inputs
-    qpos: wp.array1d(dtype=float),  # TODO(btaba): Parameter dims are misleading with vmap, should be fixed in Warp.
+    # TODO(btaba): Parameter dims are misleading with vmap, should be fixed in Warp.
+    qpos: wp.array1d(dtype=float),
+    mocap_pos: wp.array1d(dtype=wp.vec3),
+    mocap_quat: wp.array1d(dtype=wp.quat),
     # Data Outputs
     xpos: wp.array1d(dtype=wp.vec3),
     xquat: wp.array1d(dtype=wp.quat),
@@ -105,7 +87,10 @@ def _kinematics_shim(
       site_bodyid,
       site_pos,
       site_quat,
+      mocap_bodyid,
       qpos,
+      mocap_pos,
+      mocap_quat,
       xpos,
       xquat,
       xmat,
@@ -124,21 +109,15 @@ def _kinematics_shim(
   for i in range(len(args)):
     expected_ndim = annotations[i][1].ndim
     if expected_ndim < args[i].ndim:
+      naxes = args[i].ndim - expected_ndim
       # remove the expanded dims, this assumes we used `expand_dims` vmap_method
-      assert args[i].shape[0] == 1
-      new_args[i] = args[i].reshape(args[i].shape[args[i].ndim - expected_ndim:])
-      new_args[i].ndim = args[i].ndim - 1
+      assert args[i].shape[:naxes] == (1,) * naxes
+      new_args[i] = args[i].reshape(args[i].shape[naxes:])
+      new_args[i].ndim = args[i].ndim - naxes
       continue
-
     new_args[i] = args[i]
   # pytype: enable=attribute-error
   mjwarp.kinematics_(*new_args)
-
-
-# wp.config.verbose = True
-# wp.config.print_launches = True
-# wp.config.mode = "debug"
-# wp.config.verify_cuda = True
 
 
 def kinematics(m: types.Model, d: types.Data) -> types.Data:
@@ -184,7 +163,10 @@ def kinematics(m: types.Model, d: types.Data) -> types.Data:
       m.site_bodyid,
       m.site_pos,
       m.site_quat,
+      m.mocap_bodyid,
       d.qpos,
+      d.mocap_pos,
+      d.mocap_quat,
   )
 
   d = d.replace(

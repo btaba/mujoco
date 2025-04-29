@@ -76,32 +76,47 @@ class WarpSmoothTest(absltest.TestCase):
     mujoco.mj_forward(m, d)
     mx = mjx.put_model(m, backend_impl='warp')
 
-    # kinematics
+    import IPython; IPython.embed(user_ns=dict(globals(), **locals()))
+
+    # JAX data
     batch_size = 10
     def make_data(rng):
       dx = mjx.make_data(m, backend_impl='warp')
-      return dx.replace(qpos=d.qpos.copy())
+      return dx.replace(qpos=d.qpos.copy(), mocap_pos=d.mocap_pos.copy(),
+                        mocap_quat=d.mocap_quat.copy())
     dx_batch = jax.vmap(make_data)(jp.arange(batch_size))
+
     out = jax.jit(jax.vmap(mjx.kinematics, in_axes=(None, 0)))(mx, dx_batch)
 
-    import IPython; IPython.embed(user_ns=dict(globals(), **locals()))
+    # # dx = mjx.make_data(m, backend_impl='warp')
+    # # dx = dx.replace(qpos=d.qpos)
 
-    # dx = mjx.make_data(m, backend_impl='warp')
-    # dx = dx.replace(qpos=d.qpos)
-
-    # dx = jax.jit(mjx.kinematics)(mx, dx)
+    # # dx = jax.jit(mjx.kinematics)(mx, dx)
     dx = jax.tree_map(lambda x: x[0], out)
     _assert_attr_eq(d, dx, 'xanchor')
     _assert_attr_eq(d, dx, 'xaxis')
     _assert_attr_eq(d, dx, 'xpos')
     _assert_attr_eq(d, dx, 'xquat')
-    # _assert_eq(d.xmat.reshape((-1, 3, 3)), dx.xmat, 'xmat')
-    # _assert_attr_eq(d, dx, 'xipos')
-    # _assert_eq(d.ximat.reshape((-1, 3, 3)), dx.ximat, 'ximat')
-    # _assert_attr_eq(d, dx, 'geom_xpos')
-    # _assert_eq(d.geom_xmat.reshape((-1, 3, 3)), dx.geom_xmat, 'geom_xmat')
-    # _assert_attr_eq(d, dx, 'site_xpos')
-    # _assert_eq(d.site_xmat.reshape((-1, 3, 3)), dx.site_xmat, 'site_xmat')
+    _assert_eq(d.xmat.reshape((-1, 3, 3)), dx.xmat, 'xmat')
+    _assert_attr_eq(d, dx, 'xipos')
+    _assert_eq(d.ximat.reshape((-1, 3, 3)), dx.ximat, 'ximat')
+    _assert_attr_eq(d, dx, 'geom_xpos')
+    _assert_eq(d.geom_xmat.reshape((-1, 3, 3)), dx.geom_xmat, 'geom_xmat')
+    _assert_attr_eq(d, dx, 'site_xpos')
+    _assert_eq(d.site_xmat.reshape((-1, 3, 3)), dx.site_xmat, 'site_xmat')
+
+    # import warp as wp
+    # import mujoco_warp as mjwarp
+    # import mujoco_warp._src.test_util as test_util
+    # # _, mjd, m, d = test_util.fixture("pendula.xml")
+    # mw = mjwarp.put_model(m)
+    # dw = mjwarp.make_data(m, nworld=batch_size)
+    # dw.qpos = wp.array(wp.from_numpy(d.qpos[None].astype(np.float32)))
+    # dw.mocap_pos = wp.array(d.mocap_pos[None], dtype=wp.vec3, ndim=2)
+    # dw.mocap_quat = wp.array(d.mocap_quat[None], dtype=wp.quat, ndim=2)
+    # mujoco.mj_kinematics(m, d)
+    # mjwarp.kinematics(mw, dw)
+    # _assert_eq(d.xpos, dw.xpos.numpy()[0], 'xpos')
 
 
 if __name__ == '__main__':

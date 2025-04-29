@@ -83,6 +83,7 @@ class ModelWarp(PyTreeNode):
   wrap_jnt_adr: jax.Array
   wrap_site_adr: jax.Array
   wrap_site_pair_adr: jax.Array
+  mocap_bodyid: jax.Array
 
 
 class DataWarp(PyTreeNode):
