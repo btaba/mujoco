@@ -109,13 +109,14 @@ def _kinematics_shim(
     # remove the expanded dims, assuming we used the `expand_dims` vmap_method
     if expected_ndim < args[i].ndim:
       naxes = args[i].ndim - expected_ndim
-      # check that we are squeezing size 1 axes only
-      assert args[i].shape[:naxes] == (1,) * naxes
-      new_args[i] = args[i].reshape(args[i].shape[naxes:])
+      # leading dim should be the batch dimension
+      new_args[i] = args[i].reshape((-1,) + args[i].shape[naxes + 1:])
       new_args[i].ndim = args[i].ndim - naxes
       continue
 
-    # add a batch dim for fields that were not vmapped
+    # add batch dims if they don't exist
+    # this occurs when the underlying function expects a batch dim
+    # but the outer function was not called with vmap
     if expected_ndim > args[i].ndim:
       extra_dims = expected_ndim - args[i].ndim
       new_args[i] = args[i].reshape((1,) * extra_dims  + args[i].shape)

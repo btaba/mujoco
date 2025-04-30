@@ -51,13 +51,14 @@ def _kinematics_shim(
     # remove the expanded dims, assuming we used the `expand_dims` vmap_method
     if expected_ndim < args[i].ndim:
       naxes = args[i].ndim - expected_ndim
-      # check that we are squeezing size 1 axes only
-      assert args[i].shape[:naxes] == (1,) * naxes
-      new_args[i] = args[i].reshape(args[i].shape[naxes:])
+      # leading dim should be the batch dimension
+      new_args[i] = args[i].reshape((-1,) + args[i].shape[naxes + 1:])
       new_args[i].ndim = args[i].ndim - naxes
       continue
 
-    # add a batch dim for fields that were not vmapped
+    # add batch dims if they don't exist
+    # this occurs when the underlying function expects a batch dim
+    # but the outer function was not called with vmap
     if expected_ndim > args[i].ndim:
       extra_dims = expected_ndim - args[i].ndim
       new_args[i] = args[i].reshape((1,) * extra_dims  + args[i].shape)
@@ -66,8 +67,6 @@ def _kinematics_shim(
 
     new_args[i] = args[i]
   kinematics_(*new_args)
-
-
 
 
 def kinematics(m: types.Model, d: types.Data) -> types.Data:
@@ -82,6 +81,20 @@ def kinematics(m: types.Model, d: types.Data) -> types.Data:
       graph_compatible=True,
   )
   return jf(d.qpos)
+
+
+def kinematics_raw(qpos, xpos) -> types.Data:
+  """Forward kinematics."""
+  output_dims = {
+      'xpos': (xpos.shape[0], 3),
+  }
+  jf = warp_ffi.jax_callable(
+      _kinematics_shim, num_outputs=1,
+      output_dims=output_dims,
+      vmap_method='expand_dims',
+      graph_compatible=True,
+  )
+  return jf(qpos)[0]
 
 
 if __name__ == '__main__':
@@ -109,3 +122,29 @@ if __name__ == '__main__':
 
   # dx = kinematics(mx, dx)
   dx = jax.jit(kinematics)(mx, dx)  # segfault!
+
+  """ this works
+  rng = jax.random.PRNGKey(0)
+  rng, key = jax.random.split(rng)
+  qpos = jax.random.uniform(key, (20,))
+  rng, key = jax.random.split(rng)
+  xpos = jax.random.uniform(key, (40,))
+  xpos = jax.jit(kinematics_raw)(qpos, xpos)
+  print(xpos.shape)
+
+  rng = jax.random.PRNGKey(0)
+  rng, key = jax.random.split(rng)
+  qpos = jax.random.uniform(key, (2, 20,))
+  rng, key = jax.random.split(rng)
+  xpos = jax.random.uniform(key, (2, 40,))
+  xpos = jax.jit(jax.vmap(kinematics_raw))(qpos, xpos)
+  print(xpos.shape)
+
+  rng = jax.random.PRNGKey(0)
+  rng, key = jax.random.split(rng)
+  qpos = jax.random.uniform(key, (2, 2, 20,))
+  rng, key = jax.random.split(rng)
+  xpos = jax.random.uniform(key, (2, 2, 40,))
+  xpos = jax.jit(jax.vmap(jax.vmap(kinematics_raw)))(qpos, xpos)
+  print(xpos.shape)
+  """
