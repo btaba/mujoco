@@ -23,12 +23,12 @@ PyTreeNode = dataclasses.PyTreeNode
 class OptionWarp(PyTreeNode):
   """Derived fields from Option."""
 
-  depth_extension: float
-  epa_exact_neg_distance: bool
-  epa_iterations: int
-  gjk_iterations: int
-  is_sparse: bool
-  ls_parallel: bool
+  depth_extension: jax.Array
+  epa_exact_neg_distance: jax.Array
+  epa_iterations: jax.Array
+  gjk_iterations: jax.Array
+  is_sparse: jax.Array
+  ls_parallel: jax.Array
 
 
 class ModelWarp(PyTreeNode):
@@ -46,7 +46,7 @@ class ModelWarp(PyTreeNode):
   alpha_candidate: jax.Array
   body_tree: jax.Array
   body_treeadr: jax.Array
-  condim_max: int
+  condim_max: jax.Array
   dof_tri_col: jax.Array
   dof_tri_row: jax.Array
   eq_connect_adr: jax.Array
@@ -57,7 +57,7 @@ class ModelWarp(PyTreeNode):
   light_bodyid: jax.Array
   light_targetbodyid: jax.Array
   mapM2M: jax.Array
-  nlsp: int
+  nlsp: jax.Array
   nxn_geom_pair: jax.Array
   nxn_pairid: jax.Array
   qLD_tile: jax.Array

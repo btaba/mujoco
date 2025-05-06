@@ -411,9 +411,15 @@ def _put_model_warp(
     field = getattr(mw, k)
     if isinstance(field, wp.types.array):
       field = field.numpy()  # deferring device_put avoids segfaults
-    # else:
-    #   field = None
-    warp_impl[k] = field
+    elif hasattr(field, 'value'):
+      field = field.value
+    elif isinstance(field, (bool, int, np.int32)):
+      pass
+    else:
+      print('Model', k, field, type(field))
+      # field = np.zeros(1)  # Do not set None, might dereference nullptr later
+      field = None
+    warp_impl[k] = copy.copy(field)
 
   model = types.Model(
       **{k: copy.copy(v) for k, v in fields.items()},
@@ -765,13 +771,20 @@ def _make_data_warp(
   for i, k in enumerate(sorted(warp_impl_keys)):
     field = _get_nested_attr(dw, k, split='__')
     if isinstance(field, wp.types.array):
-      field = field.numpy().copy()  # deferring device_put avoids segfaults
-    # else:
-    #   field = None
-    warp_impl[k] = field
+      field = field.numpy()  # deferring device_put avoids segfaults
+    elif hasattr(field, 'value'):
+      field = field.value
+    elif isinstance(field, (bool, int)):
+      pass
+    else:
+      print(k, field)
+      field = np.zeros(1)  # Do not set None, might dereference nullptr later
+    # print(k, type(field), field.shape, field.dtype)
+    warp_impl[k] = copy.copy(field)
 
   data = types.Data(
-      qpos=jp.array(m.qpos0, dtype=float),
+      # qpos=jp.array(m.qpos0, dtype=float),
+      qpos=jp.array(m.qpos0.astype(np.float32), dtype=float),
       eq_active=m.eq_active0,
       **_make_data_public_fields(m),
       _impl=types.DataWarp(**warp_impl),

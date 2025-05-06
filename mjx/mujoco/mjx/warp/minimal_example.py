@@ -116,7 +116,6 @@ if __name__ == '__main__':
   m = test_util.load_test_file('pendula.xml')
   d = mujoco.MjData(m)
   mx = mjx.put_model(m, backend_impl='warp')
-  print('>>>>>>>>>> DEvice:' ,mx._impl.body_tree.device)
 
   rng = jax.random.PRNGKey(0)
   dx = mjx.make_data(m, backend_impl='warp')
