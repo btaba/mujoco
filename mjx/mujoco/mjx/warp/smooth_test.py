@@ -50,44 +50,44 @@ class WarpSmoothTest(absltest.TestCase):
     wp.clear_kernel_cache()
     np.random.seed(0)
 
-  # @mock.patch.dict(os.environ, {'MJX_WARP_ENABLED': 'true'})
-  # def test_kinematics_single(self):
-  #   """Tests Warp smooth from MJX with unbatched data."""
-  #   # TODO(btaba): this test segfaults
+  @mock.patch.dict(os.environ, {'MJX_WARP_ENABLED': 'true'})
+  def test_kinematics_single(self):
+    """Tests Warp smooth from MJX with unbatched data."""
+    # TODO(btaba): this test segfaults
 
-  #   m = test_util.load_test_file('pendula.xml')
+    m = test_util.load_test_file('pendula.xml')
 
-  #   d = mujoco.MjData(m)
-  #   mx = mjx.put_model(m, backend_impl='warp')
+    d = mujoco.MjData(m)
+    mx = mjx.put_model(m, backend_impl='warp')
 
-  #   rng = jax.random.PRNGKey(0)
-  #   dx = mjx.make_data(m, backend_impl='warp')
-  #   rng, key = jax.random.split(rng)
-  #   qpos = jax.random.uniform(key, (m.nq,))
-  #   rng, key1, key2 = jax.random.split(rng, 3)
-  #   mocap_pos = jax.random.normal(key1, (m.nmocap, 3))
-  #   mocap_quat = jax.random.normal(key2, (m.nmocap, 4))
-  #   mocap_quat = math.normalize(mocap_quat)
-  #   dx = dx.replace(qpos=qpos, mocap_pos=mocap_pos, mocap_quat=mocap_quat)
+    rng = jax.random.PRNGKey(0)
+    dx = mjx.make_data(m, backend_impl='warp')
+    rng, key = jax.random.split(rng)
+    qpos = jax.random.uniform(key, (m.nq,))
+    rng, key1, key2 = jax.random.split(rng, 3)
+    mocap_pos = jax.random.normal(key1, (m.nmocap, 3))
+    mocap_quat = jax.random.normal(key2, (m.nmocap, 4))
+    mocap_quat = math.normalize(mocap_quat)
+    dx = dx.replace(qpos=qpos, mocap_pos=mocap_pos, mocap_quat=mocap_quat)
 
-  #   dx = jax.jit(mjx.kinematics)(mx, dx)
+    dx = jax.jit(mjx.kinematics)(mx, dx)
 
-  #   d.qpos[:] = dx.qpos
-  #   d.mocap_pos[:] = dx.mocap_pos
-  #   d.mocap_quat[:] = dx.mocap_quat
-  #   mujoco.mj_forward(m, d)
+    d.qpos[:] = dx.qpos
+    d.mocap_pos[:] = dx.mocap_pos
+    d.mocap_quat[:] = dx.mocap_quat
+    mujoco.mj_forward(m, d)
 
-  #   _assert_attr_eq(d, dx, 'xanchor')
-  #   _assert_attr_eq(d, dx, 'xaxis')
-  #   _assert_attr_eq(d, dx, 'xpos')
-  #   _assert_attr_eq(d, dx, 'xquat')
-  #   _assert_eq(d.xmat.reshape((-1, 3, 3)), dx.xmat, 'xmat')
-  #   _assert_attr_eq(d, dx, 'xipos')
-  #   _assert_eq(d.ximat.reshape((-1, 3, 3)), dx.ximat, 'ximat')
-  #   _assert_attr_eq(d, dx, 'geom_xpos')
-  #   _assert_eq(d.geom_xmat.reshape((-1, 3, 3)), dx.geom_xmat, 'geom_xmat')
-  #   _assert_attr_eq(d, dx, 'site_xpos')
-  #   _assert_eq(d.site_xmat.reshape((-1, 3, 3)), dx.site_xmat, 'site_xmat')
+    _assert_attr_eq(d, dx, 'xanchor')
+    _assert_attr_eq(d, dx, 'xaxis')
+    _assert_attr_eq(d, dx, 'xpos')
+    _assert_attr_eq(d, dx, 'xquat')
+    _assert_eq(d.xmat.reshape((-1, 3, 3)), dx.xmat, 'xmat')
+    _assert_attr_eq(d, dx, 'xipos')
+    _assert_eq(d.ximat.reshape((-1, 3, 3)), dx.ximat, 'ximat')
+    _assert_attr_eq(d, dx, 'geom_xpos')
+    _assert_eq(d.geom_xmat.reshape((-1, 3, 3)), dx.geom_xmat, 'geom_xmat')
+    _assert_attr_eq(d, dx, 'site_xpos')
+    _assert_eq(d.site_xmat.reshape((-1, 3, 3)), dx.site_xmat, 'site_xmat')
 
   @mock.patch.dict(os.environ, {'MJX_WARP_ENABLED': 'true'})
   def test_kinematics_batch(self):
@@ -134,7 +134,7 @@ class WarpSmoothTest(absltest.TestCase):
       _assert_eq(d.site_xmat.reshape((-1, 3, 3)), dx.site_xmat, 'site_xmat')
 
   @mock.patch.dict(os.environ, {'MJX_WARP_ENABLED': 'true'})
-  def test_kinematics_multi_vmap(self):
+  def test_kinematics_nested_vmap(self):
     """Tests Warp smooth from MJX with batched data."""
     # TODO(btaba): this test segfaults
     m = test_util.load_test_file('pendula.xml')
@@ -182,4 +182,8 @@ class WarpSmoothTest(absltest.TestCase):
 
 
 if __name__ == '__main__':
+  # wp.config.verbose = True
+  # wp.config.print_launches = True
+  # wp.config.mode = 'debug'
+  # wp.config.verify_cuda = True
   absltest.main()

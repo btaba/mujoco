@@ -2,6 +2,7 @@
 
 import os
 import jax
+import jax.numpy as jp
 import warp as wp
 from warp.jax_experimental import ffi as warp_ffi
 import mujoco_warp as mjwarp
@@ -18,29 +19,34 @@ from mujoco.mjx._src import types
 
 @warp_util.kernel
 def _root(
-  qpos: wp.array2d(dtype=float),
+  body_tree: wp.array(dtype=int),
+  # qpos: wp.array2d(dtype=float),
   xpos: wp.array2d(dtype=wp.vec3),
 ):
+  # wp.printf("shape %d %d", body_tree.shape[0], body_tree.shape[1])
   worldid = wp.tid()
-  xpos[worldid, 0] = wp.vec3(qpos[worldid, 0])
+  # xpos[worldid, 0] = wp.vec3(1.0)
 
 
 def kinematics_(
-  qpos: wp.array2d(dtype=float),
+  # qpos: wp.array2d(dtype=float),
+  body_tree: wp.array(dtype=int),
   xpos: wp.array2d(dtype=wp.vec3),
 ):
   """Forward kinematics."""
 
-  nworld = wp.static(qpos.shape[0])
-  wp.launch(_root, dim=(nworld), inputs=[qpos], outputs=[xpos])
+  nworld = wp.static(10)
+  wp.launch(_root, dim=(nworld), inputs=[body_tree], outputs=[xpos])
 
 
 def _kinematics_shim(
-    qpos: wp.array1d(dtype=float),
+    body_tree: wp.array(dtype=int),
+    # qpos: wp.array1d(dtype=float),
     xpos: wp.array1d(dtype=wp.vec3),
 ):
   args = (
-      qpos,
+      body_tree,
+      # qpos,
       xpos,
   )
   new_args = [None] * len(args)
@@ -69,10 +75,10 @@ def _kinematics_shim(
   kinematics_(*new_args)
 
 
-def kinematics(m: types.Model, d: types.Data) -> types.Data:
+def kinematics(m: types.Model, d: types.Data):
   """Forward kinematics."""
   output_dims = {
-      'xpos': (m.nbody, 3),
+      'xpos': (21, 3),
   }
   jf = warp_ffi.jax_callable(
       _kinematics_shim, num_outputs=1,
@@ -80,13 +86,14 @@ def kinematics(m: types.Model, d: types.Data) -> types.Data:
       vmap_method='expand_dims',
       graph_compatible=True,
   )
-  return jf(d.qpos)
+
+  return jf(m._impl.body_tree)[0]
 
 
-def kinematics_raw(qpos, xpos) -> types.Data:
+def kinematics_raw(body_tree, xpos):
   """Forward kinematics."""
   output_dims = {
-      'xpos': (xpos.shape[0], 3),
+      'xpos': (21, 3),
   }
   jf = warp_ffi.jax_callable(
       _kinematics_shim, num_outputs=1,
@@ -94,21 +101,22 @@ def kinematics_raw(qpos, xpos) -> types.Data:
       vmap_method='expand_dims',
       graph_compatible=True,
   )
-  return jf(qpos)[0]
+  return jf(body_tree)[0]
 
 
 if __name__ == '__main__':
   wp.clear_kernel_cache()
 
-  # wp.config.verbose = True
-  # wp.config.print_launches = True
-  # wp.config.mode = 'debug'
-  # wp.config.verify_cuda = True
+  wp.config.verbose = True
+  wp.config.print_launches = True
+  wp.config.mode = 'debug'
+  wp.config.verify_cuda = True
 
   os.environ['MJX_WARP_ENABLED'] = 'true'
   m = test_util.load_test_file('pendula.xml')
   d = mujoco.MjData(m)
   mx = mjx.put_model(m, backend_impl='warp')
+  print('>>>>>>>>>> DEvice:' ,mx._impl.body_tree.device)
 
   rng = jax.random.PRNGKey(0)
   dx = mjx.make_data(m, backend_impl='warp')
@@ -121,7 +129,13 @@ if __name__ == '__main__':
   dx = dx.replace(qpos=qpos, mocap_pos=mocap_pos, mocap_quat=mocap_quat)
 
   # dx = kinematics(mx, dx)
-  dx = jax.jit(kinematics)(mx, dx)  # segfault!
+  # qpos = dx.qpos
+  # out = jax.jit(kinematics).lower(mx, dx).compile()
+  out = jax.jit(kinematics)(mx, dx)
+
+  # out = jax.jit(kinematics_raw)(mx._impl.body_tree, dx.xpos)
+
+  print('Done:', jax.block_until_ready(out))
 
   """ this works
   rng = jax.random.PRNGKey(0)

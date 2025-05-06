@@ -882,10 +882,14 @@ class Model(PyTreeNode):
     }[type(self._impl)]
 
   def __getattr__(self, name: str):
-    if hasattr(self._impl, name):
+    # NB: Certain attributes may be dynamically reserved by other frameworks on
+    # leaf nodes before the parent node is created, (e.g. `nnx.Object.value`).
+    # To resolve cases like this, we directly check the `_impl.fields()` rather
+    # than checking hasattr(self._impl, name).
+    if name in self._impl.fields():
       warnings.warn(
-          f'Accessing `{name}` directly from `Model` is deprecated. '
-          f'Access it via `model._impl.{name}` instead.',
+          f'Accessing `{name}` directly from `Data` is deprecated. '
+          f'Access it via `data._impl.{name}` instead.',
           DeprecationWarning,
           stacklevel=2,
       )

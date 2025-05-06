@@ -129,12 +129,6 @@ def _kinematics_shim(
   mjwarp.kinematics_(*new_args)
 
 
-# wp.config.verbose = True
-# wp.config.print_launches = True
-# wp.config.mode = 'debug'
-# wp.config.verify_cuda = True
-
-
 def kinematics(m: types.Model, d: types.Data) -> types.Data:
   """Forward kinematics."""
   output_dims = {
@@ -157,7 +151,7 @@ def kinematics(m: types.Model, d: types.Data) -> types.Data:
       graph_compatible=True,
   )
   out = jf(
-      m.body_tree,
+      m._impl.body_tree,
       m.qpos0,
       m.body_parentid,
       m.body_jntadr,
@@ -166,7 +160,7 @@ def kinematics(m: types.Model, d: types.Data) -> types.Data:
       m.body_quat,
       m.body_ipos,
       m.body_iquat,
-      m.body_treeadr,
+      m._impl.body_treeadr,
       m.jnt_type,
       m.jnt_qposadr,
       m.jnt_pos,
@@ -177,7 +171,7 @@ def kinematics(m: types.Model, d: types.Data) -> types.Data:
       m.site_bodyid,
       m.site_pos,
       m.site_quat,
-      m.mocap_bodyid,
+      m._impl.mocap_bodyid,
       d.qpos,
       d.mocap_pos,
       d.mocap_quat,

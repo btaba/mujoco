@@ -388,7 +388,8 @@ def _put_model_warp(
     device: Optional[jax.Device] = None,
 ) -> types.Model:
   """Puts mujoco.MjModel onto a device, resulting in mjx.Model."""
-  mw = mjwarp.put_model(m)  # TODO(btaba): Add device argument...put on the CPU?
+  with wp.ScopedDevice('cpu'):
+    mw = mjwarp.put_model(m)
 
   # Exclude _impl when creating the set of field names
   mj_field_names = {f.name for f in types.Model.fields() if f.name != '_impl'}
@@ -409,7 +410,9 @@ def _put_model_warp(
   for k in warp_impl_keys:
     field = getattr(mw, k)
     if isinstance(field, wp.types.array):
-      field = wp.to_jax(field)
+      field = field.numpy()  # deferring device_put avoids segfaults
+    # else:
+    #   field = None
     warp_impl[k] = field
 
   model = types.Model(
@@ -750,7 +753,8 @@ def _make_data_warp(
 ) -> types.Data:
   """Allocate and initialize Data for the Warp implementation."""
   # TODO(btaba): handle nconmax, njmax. just re-enable the fields in base MJ.
-  dw = mjwarp.make_data(m)
+  with wp.ScopedDevice('cpu'):
+    dw = mjwarp.make_data(m)
 
   warp_impl_keys = (
       warp_types.DataWarp.__annotations__.keys()
@@ -758,10 +762,12 @@ def _make_data_warp(
   )
 
   warp_impl = {}
-  for k in warp_impl_keys:
+  for i, k in enumerate(sorted(warp_impl_keys)):
     field = _get_nested_attr(dw, k, split='__')
     if isinstance(field, wp.types.array):
-      field = wp.to_jax(field)
+      field = field.numpy().copy()  # deferring device_put avoids segfaults
+    # else:
+    #   field = None
     warp_impl[k] = field
 
   data = types.Data(
