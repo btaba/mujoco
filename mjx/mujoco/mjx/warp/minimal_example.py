@@ -25,7 +25,7 @@ def _root(
 ):
   # wp.printf("shape %d %d", body_tree.shape[0], body_tree.shape[1])
   worldid = wp.tid()
-  # xpos[worldid, 0] = wp.vec3(1.0)
+  xpos[worldid, 0] = wp.vec3(1.0)
 
 
 def kinematics_(
