@@ -28,8 +28,11 @@ from mujoco.mjx._src import constraint
 from mujoco.mjx._src import mesh
 from mujoco.mjx._src import support
 from mujoco.mjx._src import types
+from mujoco.mjx.warp import types as warp_types
+import mujoco_warp as mjwarp
 import numpy as np
 import scipy
+import warp as wp
 
 
 def _is_cuda_gpu_device(device: jax.Device) -> bool:
@@ -208,6 +211,11 @@ def _put_option(
     c_fields = {k: getattr(o, k, None) for k in c_field_keys}
     return types.OptionC(**fields, **c_fields, **(impl_fields or {}))
 
+  if backend_impl == types.BackendImpl.WARP:
+    warp_field_keys = types.OptionWarp.__annotations__.keys() - fields.keys()
+    warp_fields = {k: getattr(o, k, None) for k in warp_field_keys}
+    return types.OptionWarp(**fields, **warp_fields, **(impl_fields or {}))
+
   raise NotImplementedError(f'Unsupported backend: {backend_impl}')
 
 
@@ -356,6 +364,52 @@ def _put_model_c(
   return _strip_weak_type(model)
 
 
+def _put_model_warp(
+    m: mujoco.MjModel,
+    device: Optional[jax.Device] = None,
+) -> types.Model:
+  """Puts mujoco.MjModel onto a device, resulting in mjx.Model."""
+  with wp.ScopedDevice('cpu'):
+    mw = mjwarp.put_model(m)
+
+  # Exclude _impl when creating the set of field names
+  mj_field_names = {f.name for f in types.Model.fields() if f.name != '_impl'}
+  fields = {f: getattr(m, f) for f in mj_field_names}
+  warp_option_keys = {f.name for f in types.OptionWarp.fields()} - {
+      f.name for f in types.Option.fields()
+  }
+  warp_options = {k: getattr(mw.opt, k) for k in warp_option_keys}
+  fields['opt'] = _put_option(m.opt, types.BackendImpl.WARP, warp_options)
+  fields['stat'] = _put_statistic(m.stat)
+
+  warp_impl_keys = (
+      warp_types.ModelWarp.__annotations__.keys()
+      - types.Model.__annotations__.keys()
+  )
+
+  warp_impl = {}
+  for k in warp_impl_keys:
+    field = getattr(mw, k)
+    if isinstance(field, wp.types.array):
+      field = field.numpy()
+    elif hasattr(field, 'value'):
+      field = field.value
+    elif isinstance(field, (bool, int, np.int32)):
+      pass
+    else:
+      print('Model', k, field, type(field))
+      field = None
+    warp_impl[k] = copy.copy(field)
+
+  model = types.Model(
+      **{k: copy.copy(v) for k, v in fields.items()},
+      _impl=warp_types.ModelWarp(**warp_impl),
+  )
+
+  model = jax.device_put(model, device=device)
+  return _strip_weak_type(model)
+
+
 def put_model(
     m: mujoco.MjModel,
     device: Optional[jax.Device] = None,
@@ -394,7 +448,7 @@ def put_model(
   elif backend_impl == types.BackendImpl.C:
     return _put_model_c(m, device)
   elif backend_impl == types.BackendImpl.WARP:
-    raise NotImplementedError('Warp backend not implemented yet.')
+    return _put_model_warp(m, device)
   else:
     raise ValueError(f'Unsupported backend implementation: {backend_impl}')
 
@@ -694,6 +748,53 @@ def _make_data_c(
   return d
 
 
+def _get_nested_attr(obj: Any, attr_name: str, split: str) -> Any:
+  """Returns the nested attribute from an object."""
+  for part in attr_name.split(split):
+    obj = getattr(obj, part)
+  return obj
+
+
+def _make_data_warp(
+    m: Union[types.Model, mujoco.MjModel],
+    device: Optional[jax.Device] = None,
+) -> types.Data:
+  """Allocate and initialize Data for the Warp implementation."""
+  # TODO(btaba): handle nconmax, njmax. just re-enable the fields in base MJ.
+  with wp.ScopedDevice('cpu'):
+    dw = mjwarp.make_data(m)
+
+  warp_impl_keys = (
+      warp_types.DataWarp.__annotations__.keys()
+      - types.Data.__annotations__.keys()
+  )
+
+  warp_impl = {}
+  for _, k in enumerate(sorted(warp_impl_keys)):
+    field = _get_nested_attr(dw, k, split='__')
+    if isinstance(field, wp.types.array):
+      field = field.numpy()  # deferring device_put avoids segfaults
+    elif hasattr(field, 'value'):
+      field = field.value
+    elif isinstance(field, (bool, int)):
+      pass
+    else:
+      print(k, field)
+      field = np.zeros(1)  # Do not set None, might dereference nullptr later
+    # print(k, type(field), field.shape, field.dtype)
+    warp_impl[k] = copy.copy(field)
+
+  data = types.Data(
+      qpos=jp.array(m.qpos0.astype(np.float32), dtype=float),
+      eq_active=m.eq_active0,
+      **_make_data_public_fields(m),
+      _impl=warp_types.DataWarp(**warp_impl),
+  )
+
+  data = jax.device_put(data, device=device)
+  return data
+
+
 def make_data(
     m: Union[types.Model, mujoco.MjModel],
     device: Optional[jax.Device] = None,
@@ -740,6 +841,8 @@ def make_data(
     return _make_data_jax(m, device)
   elif backend_impl == types.BackendImpl.C:
     return _make_data_c(m, device)
+  elif backend_impl == types.BackendImpl.WARP:
+    return _make_data_warp(m, device)
 
   raise NotImplementedError(
       f'make_data for backend_impl "{backend_impl}" not implemented yet.'

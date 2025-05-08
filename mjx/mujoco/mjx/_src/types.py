@@ -21,6 +21,7 @@ import warnings
 import jax
 import mujoco
 from mujoco.mjx._src.dataclasses import PyTreeNode  # pylint: disable=g-importing-member
+from mujoco.mjx.warp import types as warp_types
 import numpy as np
 
 
@@ -505,6 +506,11 @@ class OptionJAX(Option):
   has_fluid_params: bool
 
 
+class OptionWarp(Option, warp_types.OptionWarp):
+  """Warp-specific option."""
+
+  pass
+
 class ModelC(PyTreeNode):
   """CPU-specific model data."""
 
@@ -864,13 +870,14 @@ class Model(PyTreeNode):
   names: bytes
   signature: np.uint64
   _sizes: jax.Array
-  _impl: Union[ModelC, ModelJAX]
+  _impl: Union[ModelC, ModelJAX, warp_types.ModelWarp]
 
   @property
   def backend_impl(self) -> BackendImpl:
     return {
         ModelC: BackendImpl.C,
         ModelJAX: BackendImpl.JAX,
+        warp_types.ModelWarp: BackendImpl.WARP,
     }[type(self._impl)]
 
   def __getattr__(self, name: str):
@@ -1113,13 +1120,14 @@ class Data(PyTreeNode):
   qacc_smooth: jax.Array
   qfrc_constraint: jax.Array
   qfrc_inverse: jax.Array
-  _impl: Union[DataC, DataJAX]
+  _impl: Union[DataC, DataJAX, warp_types.DataWarp]
 
   @property
   def backend_impl(self) -> BackendImpl:
     return {
         DataC: BackendImpl.C,
         DataJAX: BackendImpl.JAX,
+        warp_types.DataWarp: BackendImpl.WARP,
     }[type(self._impl)]
 
   def __getattr__(self, name: str):
