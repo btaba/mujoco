@@ -21,38 +21,42 @@ from mujoco.mjx._src import types
 def _root(
   body_tree: wp.array(dtype=int),
   # qpos: wp.array2d(dtype=float),
+  xquat: wp.array2d(dtype=wp.quat),
   xpos: wp.array2d(dtype=wp.vec3),
 ):
   # wp.printf("shape %d %d", body_tree.shape[0], body_tree.shape[1])
   worldid = wp.tid()
-  xpos[worldid, 0] = wp.vec3(1.0)
+  tmp = xquat[worldid, 0]
+  xpos[worldid, 0] = wp.vec3(tmp.x, tmp.y, tmp.z)
 
 
 def kinematics_(
   # qpos: wp.array2d(dtype=float),
   body_tree: wp.array(dtype=int),
+  xquat: wp.array2d(dtype=wp.quat),
   xpos: wp.array2d(dtype=wp.vec3),
 ):
   """Forward kinematics."""
 
-  nworld = wp.static(10)
-  wp.launch(_root, dim=(nworld), inputs=[body_tree], outputs=[xpos])
+  nworld = xpos.shape[0]
+  wp.launch(_root, dim=(nworld), inputs=[body_tree, xquat], outputs=[xpos])
 
 
 def _kinematics_shim(
     body_tree: wp.array(dtype=int),
-    # qpos: wp.array1d(dtype=float),
-    xpos: wp.array1d(dtype=wp.vec3),
+    xquat: wp.array(dtype=wp.quat),
+    xpos: wp.array(dtype=wp.vec3),
 ):
   args = (
       body_tree,
-      # qpos,
+      xquat,
       xpos,
   )
   new_args = [None] * len(args)
   annotations = tuple(kinematics_.__annotations__.items())
   for i in range(len(args)):
     expected_ndim = annotations[i][1].ndim
+    # print(args[i].shape, args[i].ndim, expected_ndim)
 
     # remove the expanded dims, assuming we used the `expand_dims` vmap_method
     if expected_ndim < args[i].ndim:
@@ -69,6 +73,7 @@ def _kinematics_shim(
       extra_dims = expected_ndim - args[i].ndim
       new_args[i] = args[i].reshape((1,) * extra_dims  + args[i].shape)
       new_args[i].ndim = expected_ndim
+      # print(i, new_args[i].shape, new_args[i].ndim)
       continue
 
     new_args[i] = args[i]
@@ -88,20 +93,6 @@ def kinematics(m: types.Model, d: types.Data):
   )
 
   return jf(m._impl.body_tree)[0]
-
-
-def kinematics_raw(body_tree, xpos):
-  """Forward kinematics."""
-  output_dims = {
-      'xpos': (21, 3),
-  }
-  jf = warp_ffi.jax_callable(
-      _kinematics_shim, num_outputs=1,
-      output_dims=output_dims,
-      vmap_method='expand_dims',
-      graph_compatible=True,
-  )
-  return jf(body_tree)[0]
 
 
 if __name__ == '__main__':
