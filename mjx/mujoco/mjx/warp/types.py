@@ -29,51 +29,51 @@ class OptionWarp(PyTreeNode):
 class ModelWarp(PyTreeNode):
   """Derived fields from Model."""
 
-  M_colind: jax.Array
-  M_rowadr: jax.Array
-  M_rownnz: jax.Array
+  M_colind: np.ndarray
+  M_rowadr: np.ndarray
+  M_rownnz: np.ndarray
   actuator_affine_bias_gain: bool
   actuator_moment_tiles_nu: Tuple[TileSet, ...]
   actuator_moment_tiles_nv: Tuple[TileSet, ...]
   body_tree: Tuple[np.ndarray, ...]
   condim_max: int
-  dof_tri_col: jax.Array
-  dof_tri_row: jax.Array
-  eq_connect_adr: jax.Array
-  eq_jnt_adr: jax.Array
-  eq_ten_adr: jax.Array
-  eq_wld_adr: jax.Array
-  jnt_limited_ball_adr: jax.Array
-  jnt_limited_slide_hinge_adr: jax.Array
+  dof_tri_col: np.ndarray
+  dof_tri_row: np.ndarray
+  eq_connect_adr: np.ndarray
+  eq_jnt_adr: np.ndarray
+  eq_ten_adr: np.ndarray
+  eq_wld_adr: np.ndarray
+  jnt_limited_ball_adr: np.ndarray
+  jnt_limited_slide_hinge_adr: np.ndarray
   light_bodyid: jax.Array
   light_targetbodyid: jax.Array
   mapM2M: jax.Array
   mocap_bodyid: jax.Array
   nlsp: int
-  nxn_geom_pair: jax.Array
-  nxn_pairid: jax.Array
+  nxn_geom_pair: np.ndarray
+  nxn_pairid: np.ndarray
   qLD_updates: Tuple[np.ndarray, ...]
-  qM_fullm_i: jax.Array
-  qM_fullm_j: jax.Array
-  qM_madr_ij: jax.Array
-  qM_mulm_i: jax.Array
-  qM_mulm_j: jax.Array
+  qM_fullm_i: np.ndarray
+  qM_fullm_j: np.ndarray
+  qM_madr_ij: np.ndarray
+  qM_mulm_i: np.ndarray
+  qM_mulm_j: np.ndarray
   qM_tiles: Tuple[TileSet, ...]
-  sensor_acc_adr: jax.Array
-  sensor_pos_adr: jax.Array
+  sensor_acc_adr: np.ndarray
+  sensor_pos_adr: np.ndarray
   sensor_rne_postconstraint: bool
   sensor_subtree_vel: bool
-  sensor_vel_adr: jax.Array
+  sensor_vel_adr: np.ndarray
   subtree_mass: jax.Array
   ten_wrapadr_site: jax.Array
   ten_wrapnum_site: jax.Array
-  tendon_jnt_adr: jax.Array
-  tendon_limited_adr: jax.Array
-  tendon_site_adr: jax.Array
-  tendon_site_pair_adr: jax.Array
-  wrap_jnt_adr: jax.Array
-  wrap_site_adr: jax.Array
-  wrap_site_pair_adr: jax.Array
+  tendon_jnt_adr: np.ndarray
+  tendon_limited_adr: np.ndarray
+  tendon_site_adr: np.ndarray
+  tendon_site_pair_adr: np.ndarray
+  wrap_jnt_adr: np.ndarray
+  wrap_site_adr: np.ndarray
+  wrap_site_pair_adr: np.ndarray
 
 
 class DataWarp(PyTreeNode):
@@ -91,39 +91,39 @@ class DataWarp(PyTreeNode):
   cfrc_ext: jax.Array
   cfrc_int: jax.Array
   cinert: jax.Array
-  collision_pair: jax.Array
-  collision_pairid: jax.Array
-  collision_worldid: jax.Array
-  contact__dim: jax.Array
-  contact__dist: jax.Array
-  contact__efc_address: jax.Array
-  contact__frame: jax.Array
-  contact__friction: jax.Array
-  contact__geom: jax.Array
-  contact__includemargin: jax.Array
-  contact__pos: jax.Array
-  contact__solimp: jax.Array
-  contact__solref: jax.Array
-  contact__solreffriction: jax.Array
-  contact__worldid: jax.Array
+  collision_pair: np.ndarray
+  collision_pairid: np.ndarray
+  collision_worldid: np.ndarray
+  contact__dim: np.ndarray
+  contact__dist: np.ndarray
+  contact__efc_address: np.ndarray
+  contact__frame: np.ndarray
+  contact__friction: np.ndarray
+  contact__geom: np.ndarray
+  contact__includemargin: np.ndarray
+  contact__pos: np.ndarray
+  contact__solimp: np.ndarray
+  contact__solref: np.ndarray
+  contact__solreffriction: np.ndarray
+  contact__worldid: np.ndarray
   crb: jax.Array
   efc__D: jax.Array
-  efc__J: jax.Array
-  efc__Jaref: jax.Array
+  efc__J: np.ndarray
+  efc__Jaref: np.ndarray
   efc__Ma: jax.Array
   efc__Mgrad: jax.Array
-  efc__active: jax.Array
+  efc__active: np.ndarray
   efc__alpha: jax.Array
   efc__aref: jax.Array
   efc__beta: jax.Array
   efc__beta_den: jax.Array
   efc__beta_num: jax.Array
-  efc__condim: jax.Array
+  efc__condim: np.ndarray
   efc__cost: jax.Array
   efc__cost_candidate: jax.Array
   efc__done: jax.Array
-  efc__force: jax.Array
-  efc__frictionloss: jax.Array
+  efc__force: np.ndarray
+  efc__frictionloss: np.ndarray
   efc__gauss: jax.Array
   efc__grad: jax.Array
   efc__grad_dot: jax.Array
@@ -133,33 +133,33 @@ class DataWarp(PyTreeNode):
   efc__hi_alpha: jax.Array
   efc__hi_next: jax.Array
   efc__hi_next_alpha: jax.Array
-  efc__id: jax.Array
-  efc__jv: jax.Array
+  efc__id: np.ndarray
+  efc__jv: np.ndarray
   efc__lo: jax.Array
   efc__lo_alpha: jax.Array
   efc__lo_next: jax.Array
   efc__lo_next_alpha: jax.Array
   efc__ls_done: jax.Array
-  efc__margin: jax.Array
+  efc__margin: np.ndarray
   efc__mid: jax.Array
   efc__mid_alpha: jax.Array
   efc__mv: jax.Array
   efc__p0: jax.Array
-  efc__pos: jax.Array
+  efc__pos: np.ndarray
   efc__prev_Mgrad: jax.Array
   efc__prev_cost: jax.Array
   efc__prev_grad: jax.Array
-  efc__quad: jax.Array
+  efc__quad: np.ndarray
   efc__quad_gauss: jax.Array
   efc__quad_total_candidate: jax.Array
   efc__search: jax.Array
   efc__search_dot: jax.Array
   efc__solver_niter: jax.Array
-  efc__u: jax.Array
-  efc__uu: jax.Array
-  efc__uv: jax.Array
-  efc__vv: jax.Array
-  efc__worldid: jax.Array
+  efc__u: np.ndarray
+  efc__uu: np.ndarray
+  efc__uv: np.ndarray
+  efc__vv: np.ndarray
+  efc__worldid: np.ndarray
   light_xdir: jax.Array
   light_xpos: jax.Array
   ncollision: jax.Array
