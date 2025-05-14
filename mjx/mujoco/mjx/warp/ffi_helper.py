@@ -54,6 +54,16 @@ def format_args_for_warp(
           args[i].shape,
           new_args[i].shape,  # pytype: disable=attribute-error
       )
+      if new_args[i].ndim > 1 and new_args[i].shape[0] == 1:
+        old_strides = new_args[i].strides
+        new_args[i].strides = (0,) + new_args[i].strides[1:]
+        new_args[i] = new_args[i]
+        logging.debug(
+            "Leading batch dim of 1, adding stride: %s %s => %s",
+            names[i],
+            old_strides,
+            new_args[i].strides,  # pytype: disable=attribute-error
+        )
       continue
 
     # Squash nested vmap batch axes.
@@ -68,10 +78,6 @@ def format_args_for_warp(
           new_args[i].shape,  # pytype: disable=attribute-error
       )
       continue
-
-    # if args[i].ndim > expected_ndim:
-    #   print(args[i], args[i].shape, args[i].ndim)
-    #   raise ValueError(f'arg[{i}] has ndim={args[i].ndim}, expected ndim={expected_ndim}.')
 
     # Add stride 0 to unbatched inputs that have the correct ndim.
     # Unbatched inputs get a leading dimension of 1, using
