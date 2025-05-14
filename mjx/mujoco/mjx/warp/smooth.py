@@ -1,24 +1,9 @@
-# Copyright 2025 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""mjWarp Smooth."""
 import dataclasses
 from mujoco.mjx._src import types
+from mujoco.mjx.warp import ffi_helper
 import mujoco_warp as mjwarp
 import warp as wp
 from warp.jax_experimental import ffi as warp_ffi
-import numpy as np
 
 
 def _kinematics(
@@ -27,7 +12,6 @@ def _kinematics(
     nsite: int,
     nmocap: int,
     qpos0: wp.array(dtype=float),
-    # body_tree: tuple[wp.array(dtype=int), ...],
     body_tree_val: wp.array(dtype=int),
     body_tree_adr: wp.array(dtype=int),
     body_parentid: wp.array(dtype=int),
@@ -79,16 +63,8 @@ def _kinematics(
   m.body_parentid = body_parentid
   m.body_pos = body_pos
   m.body_quat = body_quat
-
-  body_tree = []
-  body_tree_adr = body_tree_adr.numpy()
-  body_tree_val = body_tree_val.numpy()
-  for i in range(len(body_tree_adr) - 1):
-    beg = body_tree_adr[i]
-    end = body_tree_adr[i + 1]
-    body_tree.append(wp.array(body_tree_val[beg:end]))
+  body_tree = ffi_helper.adr_arr_to_tuple(body_tree_val, body_tree_adr)
   m.body_tree = body_tree
-
   m.geom_bodyid = geom_bodyid
   m.geom_pos = geom_pos
   m.geom_quat = geom_quat
@@ -127,7 +103,6 @@ def _kinematics_shim(
     nsite: int,
     nmocap: int,
     qpos0: wp.array(dtype=float),
-    # body_tree: tuple[wp.array(dtype=int), ...],
     body_tree_val: wp.array(dtype=int),
     body_tree_adr: wp.array(dtype=int),
     body_parentid: wp.array(dtype=int),
@@ -168,7 +143,6 @@ def _kinematics_shim(
       nsite,
       nmocap,
       qpos0,
-      # body_tree,
       body_tree_val,
       body_tree_adr,
       body_parentid,
@@ -209,7 +183,6 @@ def _kinematics_shim(
       "nsite",
       "nmocap",
       "qpos0",
-      # "body_tree",
       "body_tree_val",
       "body_tree_adr",
       "body_parentid",
@@ -245,89 +218,8 @@ def _kinematics_shim(
       "site_xpos",
       "site_xmat",
   )
-  new_args = [None] * len(args)
-  annotations = tuple(_kinematics.__annotations__.items())
-  for i in range(len(args)):
-    typ_ = annotations[i][1]
-    if not hasattr(typ_, 'ndim'):
-      new_args[i] = args[i]
-      continue
-    expected_ndim = annotations[i][1].ndim
-
-    # Remove the expanded_dim if we are exceeding the expected ndim.
-    # i.e. Unbatched model fields will get an extra dim due to
-    # vmap_method="expand_dims".
-    if args[i].ndim > expected_ndim and args[i].shape[0] == 1:
-      extra_dim = args[i].ndim - expected_ndim
-      assert sum(args[i].shape[:extra_dim]) == extra_dim
-      arg = args[i].reshape(args[i].shape[extra_dim:])
-      arg.ndim = expected_ndim
-      new_args[i] = arg
-      print(
-          "Removing extra dim: ",
-          names[i],
-          args[i].shape,
-          "=>",
-          new_args[i].shape,
-      )
-      continue
-
-    # Squash nested vmap batch axes.
-    if args[i].ndim > expected_ndim:
-      extra_ndim = args[i].ndim - expected_ndim
-      new_args[i] = args[i].reshape((-1,) + args[i].shape[extra_ndim + 1 :])
-      new_args[i].ndim = expected_ndim
-      print(
-          "Squashing extra dim: ",
-          names[i],
-          args[i].shape,
-          "=>",
-          new_args[i].shape,
-      )
-      continue
-
-    # if args[i].ndim > expected_ndim:
-    #   print(args[i], args[i].shape, args[i].ndim)
-    #   raise ValueError(f'arg[{i}] has ndim={args[i].ndim}, expected ndim={expected_ndim}.')
-
-    # Add stride 0 to unbatched inputs that have the correct ndim.
-    # Unbatched inputs get a leading dimension of 1, using
-    # vmap_method="expand_dims". We add a stride of 0 to the leading dim.
-    if expected_ndim == args[i].ndim and args[i].shape[0] == 1:
-      arg = args[i]
-      old_strides = arg.strides
-      arg.strides = (0,) + arg.strides[1:]
-      new_args[i] = arg
-      print(
-          "Leading batch dim of 1, adding stride: ",
-          names[i],
-          old_strides,
-          "=>",
-          new_args[i].strides,
-      )
-      continue
-
-    # Add batch dims if they don't exist. This occurs when the underlying
-    # function expects a batch dim but the outer function was not called
-    # with vmap.
-    # e.g. Model/Data have nworld == 1, but without the leading dim in JAX.
-    if expected_ndim > args[i].ndim:
-      extra_dims = expected_ndim - args[i].ndim
-      new_args[i] = args[i].reshape((1,) * extra_dims + args[i].shape)
-      new_args[i].ndim = expected_ndim
-      print(
-          "No leading batch dims",
-          names[i],
-          args[i].shape,
-          "=>",
-          new_args[i].shape,
-      )
-      continue
-
-    new_args[i] = args[i]
-    print("Did nothing: ", names[i], args[i].shape, "=>", new_args[i].shape)
-
-  _kinematics(*new_args)
+  args = ffi_helper.format_args_for_warp(*args, names=names, kernel=_kinematics)
+  _kinematics(*args)
 
 
 def kinematics(m: types.Model, d: types.Data):
@@ -344,6 +236,7 @@ def kinematics(m: types.Model, d: types.Data):
       "site_xpos": (m.nsite, 3),
       "site_xmat": (m.nsite, 3, 3),
   }
+  body_tree_val, body_tree_adr = ffi_helper.tuple_to_adr_arr(m.body_tree)
   jf = warp_ffi.jax_callable(
       _kinematics_shim,
       num_outputs=11,
@@ -351,17 +244,11 @@ def kinematics(m: types.Model, d: types.Data):
       vmap_method="expand_dims",
       graph_compatible=True,
   )
-
-  body_tree_val = np.concatenate(m.body_tree, dtype=np.int32)
-  body_tree_adr = np.cumsum([len(v) for v in m.body_tree], dtype=np.int32)
-  body_tree_adr = np.append(np.array(0), body_tree_adr).astype(np.int32)
-
   out = jf(
       m.ngeom,
       m.nsite,
       m.nmocap,
       m.qpos0,
-      # m.body_tree,
       body_tree_val,
       body_tree_adr,
       m.body_parentid,
