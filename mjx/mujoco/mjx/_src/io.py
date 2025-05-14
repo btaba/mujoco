@@ -396,6 +396,8 @@ def _put_model_warp(
       field = field.value
     elif isinstance(field, (bool, int, np.int32)):
       pass
+    elif isinstance(field, tuple) and isinstance(field[0], wp.types.array):
+      field = tuple(f.numpy() for f in field)
     else:
       print('Model', k, field, type(field))
       field = None
@@ -778,6 +780,8 @@ def _make_data_warp(
       field = field.value
     elif isinstance(field, (bool, int)):
       pass
+    elif isinstance(field, tuple) and isinstance(field[0], wp.types.array):
+      field = tuple(f.numpy() for f in field)
     else:
       print(k, field)
       field = np.zeros(1)  # Do not set None, might dereference nullptr later

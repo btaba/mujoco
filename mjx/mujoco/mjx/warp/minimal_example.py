@@ -79,6 +79,11 @@ def _kinematics_shim(
       nefc_out,
       xpos_out,
   )
+  print("\n--- Inside _kinematics_shim (traced by JAX) ---")
+  print(f"  efc_active_in (JAX DeviceArray): Type={type(efc_active_in)}, Shape={efc_active_in.shape}, Device={efc_active_in.device}")
+  device_address = efc_active_in.ptr
+  print(f"  --> Device memory address of efc_active_in: {hex(device_address)}")
+
   names = ['mocap_bodyid', 'xpos_in', 'xquat', 'efc__active', 'nefc', 'xpos_out']
   new_args = [None] * len(args)
   annotations = tuple(_kinematics_kernel.__annotations__.items())

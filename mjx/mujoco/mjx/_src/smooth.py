@@ -21,6 +21,7 @@ from mujoco.mjx._src import math
 from mujoco.mjx._src import scan
 from mujoco.mjx._src import support
 # pylint: disable=g-importing-member
+from mujoco.mjx._src.types import BackendImpl
 from mujoco.mjx._src.types import CamLightType
 from mujoco.mjx._src.types import Data
 from mujoco.mjx._src.types import DataJAX
@@ -33,10 +34,14 @@ from mujoco.mjx._src.types import TrnType
 from mujoco.mjx._src.types import WrapType
 # pylint: enable=g-importing-member
 import numpy as np
+from mujoco.mjx.warp import smooth as wp_smooth
 
 
 def kinematics(m: Model, d: Data) -> Data:
   """Converts position/velocity from generalized coordinates to maximal."""
+  if m.backend_impl == BackendImpl.WARP and d.backend_impl == BackendImpl.WARP:
+    return wp_smooth.kinematics(m, d)
+
   def fn(carry, jnt_typs, jnt_pos, jnt_axis, qpos, qpos0, pos, quat):
     # calculate joint anchors, axes, body pos and quat in global frame
     # also normalize qpos while we're at it
