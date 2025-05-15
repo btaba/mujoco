@@ -6,6 +6,13 @@ import warp as wp
 from warp.jax_experimental import ffi as warp_ffi
 
 
+_m = mjwarp.Model(
+    **{f.name: None for f in dataclasses.fields(mjwarp.Model) if f.init}
+)
+_d = mjwarp.Data(
+    **{f.name: None for f in dataclasses.fields(mjwarp.Data) if f.init}
+)
+
 def _kinematics(
     # Model
     ngeom: int,
@@ -48,54 +55,46 @@ def _kinematics(
     site_xpos: wp.array2d(dtype=wp.vec3),
     site_xmat: wp.array2d(dtype=wp.mat33),
 ):
-
-  m = mjwarp.Model(
-      **{f.name: None for f in dataclasses.fields(mjwarp.Model) if f.init}
-  )
-  d = mjwarp.Data(
-      **{f.name: None for f in dataclasses.fields(mjwarp.Data) if f.init}
-  )
-
-  m.body_ipos = body_ipos
-  m.body_iquat = body_iquat
-  m.body_jntadr = body_jntadr
-  m.body_jntnum = body_jntnum
-  m.body_parentid = body_parentid
-  m.body_pos = body_pos
-  m.body_quat = body_quat
+  _m.body_ipos = body_ipos
+  _m.body_iquat = body_iquat
+  _m.body_jntadr = body_jntadr
+  _m.body_jntnum = body_jntnum
+  _m.body_parentid = body_parentid
+  _m.body_pos = body_pos
+  _m.body_quat = body_quat
   body_tree = ffi_helper.adr_arr_to_tuple(body_tree_val, body_tree_adr)
-  m.body_tree = body_tree
-  m.geom_bodyid = geom_bodyid
-  m.geom_pos = geom_pos
-  m.geom_quat = geom_quat
-  m.jnt_axis = jnt_axis
-  m.jnt_pos = jnt_pos
-  m.jnt_qposadr = jnt_qposadr
-  m.jnt_type = jnt_type
-  m.mocap_bodyid = mocap_bodyid
-  m.ngeom = ngeom
-  m.nmocap = nmocap
-  m.nsite = nsite
-  m.qpos0 = qpos0
-  m.site_bodyid = site_bodyid
-  m.site_pos = site_pos
-  m.site_quat = site_quat
-  d.geom_xmat = geom_xmat
-  d.geom_xpos = geom_xpos
-  d.mocap_pos = mocap_pos
-  d.mocap_quat = mocap_quat
-  d.qpos = qpos
-  d.site_xmat = site_xmat
-  d.site_xpos = site_xpos
-  d.xanchor = xanchor
-  d.xaxis = xaxis
-  d.ximat = ximat
-  d.xipos = xipos
-  d.xmat = xmat
-  d.xpos = xpos
-  d.xquat = xquat
-  d.nworld = d.qpos.shape[0]
-  mjwarp.kinematics(m, d)
+  _m.body_tree = body_tree
+  _m.geom_bodyid = geom_bodyid
+  _m.geom_pos = geom_pos
+  _m.geom_quat = geom_quat
+  _m.jnt_axis = jnt_axis
+  _m.jnt_pos = jnt_pos
+  _m.jnt_qposadr = jnt_qposadr
+  _m.jnt_type = jnt_type
+  _m.mocap_bodyid = mocap_bodyid
+  _m.ngeom = ngeom
+  _m.nmocap = nmocap
+  _m.nsite = nsite
+  _m.qpos0 = qpos0
+  _m.site_bodyid = site_bodyid
+  _m.site_pos = site_pos
+  _m.site_quat = site_quat
+  _d.geom_xmat = geom_xmat
+  _d.geom_xpos = geom_xpos
+  _d.mocap_pos = mocap_pos
+  _d.mocap_quat = mocap_quat
+  _d.qpos = qpos
+  _d.site_xmat = site_xmat
+  _d.site_xpos = site_xpos
+  _d.xanchor = xanchor
+  _d.xaxis = xaxis
+  _d.ximat = ximat
+  _d.xipos = xipos
+  _d.xmat = xmat
+  _d.xpos = xpos
+  _d.xquat = xquat
+  _d.nworld = _d.qpos.shape[0]
+  mjwarp.kinematics(_m, _d)
 
 
 def _kinematics_shim(
