@@ -61,6 +61,9 @@ def vmap(m, nenv, nstep, unroll_steps):
       site_xpos: wp.array(dtype=wp.vec3),
       site_xmat: wp.array(dtype=wp.mat33),
   ):
+    # Note: ideally we would be doing what is in smooth.py,
+    # and calling format_args_for_warp. This example is illustrative
+    # showing how _DO_MORE_WORK executes on every call even after jax.jit.
     if _DO_MORE_WORK.value:
       a = 0
       for _ in range(1_000_000):
