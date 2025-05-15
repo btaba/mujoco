@@ -10,13 +10,34 @@ import warp as wp
 def adr_arr_to_tuple(
     arr_val: wp.array(dtype=int), arr_adr: wp.array(dtype=int)
 ) -> tuple[wp.array, ...]:
+  # print(f"DEBUG: adr_arr_to_tuple called. arr_val ID: {id(arr_val)}")
+  # arr_list = []
+  # arr_adr = arr_adr.numpy()
+  # arr_val = arr_val.numpy()
+  # for i in range(len(arr_adr) - 1):
+  #   beg = arr_adr[i]
+  #   end = arr_adr[i + 1]
+  #   new_arr = wp.array(arr_val[beg:end])
+  #   arr_list.append(new_arr)
+  #   print(f"  DEBUG: Created new wp.array with ID: {id(new_arr)}")
+  # return tuple(arr_list)
   arr_list = []
-  arr_adr = arr_adr.numpy()
-  arr_val = arr_val.numpy()
+  arr_adr = arr_adr.numpy()  # this is doing a host copy...
+  # arr_adr = [ 0 , 1, 13, 18, 21]
+  # print(arr_adr)
+  base_ptr = arr_val.ptr
+  dtype = arr_val.dtype
+  itemsize = wp.types.type_size_in_bytes(dtype)
   for i in range(len(arr_adr) - 1):
-    beg = arr_adr[i]
-    end = arr_adr[i + 1]
-    arr_list.append(wp.array(arr_val[beg:end]))
+    beg, end = int(arr_adr[i]), int(arr_adr[i + 1])
+    length = end - beg
+    if length == 0:
+      sub_array = wp.empty(shape=(0,), dtype=dtype, device=arr_val.device)
+    else:
+      byte_offset = beg * itemsize
+      sub_ptr = base_ptr + byte_offset 
+      sub_array = wp.array(ptr=sub_ptr, shape=(length,), dtype=dtype, device=arr_val.device, deleter=None)
+    arr_list.append(sub_array)
   return tuple(arr_list)
 
 
@@ -31,6 +52,8 @@ def format_args_for_warp(
     *args: Any, names: tuple[str, ...], kernel: Any
 ) -> Any:
   """Formats args for warp assuming vmap_method="expand_dims"."""
+  logger = logging.getLogger('mujoco.mjx.warp.ffi_helper')
+
   new_args = [None] * len(args)
   annotations = tuple(kernel.__annotations__.items())
   for i in range(len(args)):
@@ -48,17 +71,19 @@ def format_args_for_warp(
       arg = args[i].reshape(args[i].shape[extra_dim:])
       arg.ndim = expected_ndim
       new_args[i] = arg
-      logging.debug(
+      logger.debug(
           "Removing extra dim: %s %s => %s",
           names[i],
           args[i].shape,
           new_args[i].shape,  # pytype: disable=attribute-error
       )
+      # The annotation has larger ndim but the leading dim is 1.
+      # Let's add a stride of 0 to the first axis.
       if new_args[i].ndim > 1 and new_args[i].shape[0] == 1:
         old_strides = new_args[i].strides
         new_args[i].strides = (0,) + new_args[i].strides[1:]
         new_args[i] = new_args[i]
-        logging.debug(
+        logger.debug(
             "Leading batch dim of 1, adding stride: %s %s => %s",
             names[i],
             old_strides,
@@ -71,7 +96,7 @@ def format_args_for_warp(
       extra_ndim = args[i].ndim - expected_ndim
       new_args[i] = args[i].reshape((-1,) + args[i].shape[extra_ndim + 1 :])
       new_args[i].ndim = expected_ndim
-      logging.debug(
+      logger.debug(
           "Squashing extra dim: %s %s => %s",
           names[i],
           args[i].shape,
@@ -87,7 +112,7 @@ def format_args_for_warp(
       old_strides = arg.strides
       arg.strides = (0,) + arg.strides[1:]
       new_args[i] = arg
-      logging.debug(
+      logger.debug(
           "Leading batch dim of 1, adding stride: %s %s => %s",
           names[i],
           old_strides,
@@ -103,15 +128,22 @@ def format_args_for_warp(
       extra_dims = expected_ndim - args[i].ndim
       new_args[i] = args[i].reshape((1,) * extra_dims + args[i].shape)
       new_args[i].ndim = expected_ndim
-      logging.debug(
+      new_args[i].strides = (0,) + new_args[i].strides[1:]
+      logger.debug(
           "No leading batch dims %s %s => %s",
           names[i],
           args[i].shape,
           new_args[i].shape,  # pytype: disable=attribute-error
       )
+      logger.debug(
+          "Adding stride: %s %s => %s",
+          names[i],
+          args[i].strides,
+          new_args[i].strides,  # pytype: disable=attribute-error
+      )
       continue
 
     new_args[i] = args[i]
-    logging.debug("Did nothing: %s %s => %s", names[i], args[i].shape, new_args[i].shape)  # pytype: disable=attribute-error
+    logger.debug("Did nothing: %s %s => %s", names[i], args[i].shape, new_args[i].shape)  # pytype: disable=attribute-error
 
   return new_args
