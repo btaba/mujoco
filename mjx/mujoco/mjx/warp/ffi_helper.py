@@ -10,7 +10,6 @@ import warp as wp
 def adr_arr_to_tuple(
     arr_val: wp.array(dtype=int), arr_adr: wp.array(dtype=int)
 ) -> tuple[wp.array, ...]:
-  # print(f"DEBUG: adr_arr_to_tuple called. arr_val ID: {id(arr_val)}")
   # arr_list = []
   # arr_adr = arr_adr.numpy()
   # arr_val = arr_val.numpy()
@@ -19,12 +18,11 @@ def adr_arr_to_tuple(
   #   end = arr_adr[i + 1]
   #   new_arr = wp.array(arr_val[beg:end])
   #   arr_list.append(new_arr)
-  #   print(f"  DEBUG: Created new wp.array with ID: {id(new_arr)}")
   # return tuple(arr_list)
   arr_list = []
-  arr_adr = arr_adr.numpy()  # this is doing a host copy...
+  arr_adr = arr_adr.numpy()  # this is doing a host copy, can this be cached?
   # arr_adr = [ 0 , 1, 13, 18, 21]
-  # print(arr_adr)
+
   base_ptr = arr_val.ptr
   dtype = arr_val.dtype
   itemsize = wp.types.type_size_in_bytes(dtype)

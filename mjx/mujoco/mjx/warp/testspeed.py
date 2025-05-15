@@ -15,6 +15,9 @@ import warp as wp
 import mujoco_warp as mjwarp
 from warp.jax_experimental import ffi as warp_ffi
 
+os.environ["XLA_FLAGS"] = (
+    "--xla_gpu_graph_min_graph_size=1"
+)
 
 _MODELFILE = flags.DEFINE_string(
     'modelfile',
@@ -77,12 +80,7 @@ def benchmark(
   @jax.jit
   def unroll(d):
     def fn(d, _):
-      # ensure real work - avoid caching
-      if function == 'kinematics':
-        hash_val = jp.sum(d.xpos) + jp.sum(d.xquat)
-        hash_val += jp.sum(d.xanchor) + jp.sum(d.xaxis)
-        hash_val *= 1e-6
-        d = d.replace(qpos=d.qpos + hash_val)
+      d = d.replace(qpos=d.qpos + 0.0001 * d.qpos)
       return step_fn(mx, d), None
 
     return jax.lax.scan(fn, d, None, length=nstep, unroll=unroll_steps)
