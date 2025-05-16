@@ -11,7 +11,8 @@ def adr_arr_to_tuple(
 ) -> tuple[wp.array, ...]:
   arr_list = []
   # arr_adr = arr_adr.numpy()  # this is doing a host copy which is no bueno, can this be cached?
-  arr_adr = [ 0,  1,  2,  6,  9, 13, 15, 17]
+  # arr_adr = [ 0,  1,  2,  6,  9, 13, 15, 17]
+  arr_adr = [ 0 , 1, 13, 18, 21]
 
   # create the tuple array by copying the pointers
   base_ptr = arr_val.ptr

@@ -62,6 +62,7 @@ def _kinematics(
   _m.body_parentid = body_parentid
   _m.body_pos = body_pos
   _m.body_quat = body_quat
+  # Need to figure out how to get the host and cache the body_tree_adr?
   body_tree = ffi_helper.adr_arr_to_tuple(body_tree_val, body_tree_adr)
   _m.body_tree = body_tree
   _m.geom_bodyid = geom_bodyid

@@ -112,7 +112,7 @@ class WarpSmoothTest(absltest.TestCase):
     out = jax.jit(jax.vmap(mjx.kinematics, in_axes=(None, 0)))(mx, dx_batch)
 
     for i in range(batch_size):
-      dx = jax.tree_map(lambda x: x[i], out)
+      dx = jax.tree.map(lambda x: x[i], out)
 
       d.qpos[:] = dx.qpos
       d.mocap_pos[:] = dx.mocap_pos
@@ -153,13 +153,13 @@ class WarpSmoothTest(absltest.TestCase):
 
     rng = jax.random.split(jax.random.PRNGKey(0), 8)
     dx_batch = jax.vmap(make_data)(rng)
-    dx_batch = jax.tree_map(lambda x: x.reshape((2, 4) + x.shape[1:]), dx_batch)
+    dx_batch = jax.tree.map(lambda x: x.reshape((2, 4) + x.shape[1:]), dx_batch)
 
     out = jax.jit(jax.vmap(jax.vmap(mjx.kinematics, in_axes=(None, 0)), in_axes=(None, 0)))(mx, dx_batch)
 
     for i in range(2):
       for j in range(4):
-        dx = jax.tree_map(lambda x: x[i][j], out)
+        dx = jax.tree.map(lambda x: x[i][j], out)
 
         d.qpos[:] = dx.qpos
         d.mocap_pos[:] = dx.mocap_pos
