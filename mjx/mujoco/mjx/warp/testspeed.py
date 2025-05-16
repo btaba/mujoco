@@ -111,8 +111,6 @@ def benchmark_raw_warp(
       xaxis: wp.array2d(dtype=wp.vec3),
       geom_xpos: wp.array2d(dtype=wp.vec3),
       geom_xmat: wp.array2d(dtype=wp.mat33),
-      site_xpos: wp.array2d(dtype=wp.vec3),
-      site_xmat: wp.array2d(dtype=wp.mat33),
   ):
     wp.copy(d.qpos, qpos_in)
     mjwarp.kinematics(mw, d)
@@ -125,20 +123,18 @@ def benchmark_raw_warp(
     wp.copy(xaxis, d.xaxis)
     wp.copy(geom_xpos, d.geom_xpos)
     wp.copy(geom_xmat, d.geom_xmat)
-    wp.copy(site_xpos, d.site_xpos)
-    wp.copy(site_xmat, d.site_xmat)
 
-  def unroll(qpos, xpos, xquat, xmat, xipos, ximat, xanchor, xaxis, geom_xpos, geom_xmat, site_xpos, site_xmat):
+  def unroll(qpos, xpos, xquat, xmat, xipos, ximat, xanchor, xaxis, geom_xpos, geom_xmat):
     def step(carry, _):
       qpos, *_ = carry
       out = warp_kinematics_fn(qpos)
       return (qpos,) + tuple(out), None
 
-    (qpos, xpos, xquat, xmat, xipos, ximat, xanchor, xaxis, geom_xpos, geom_xmat, site_xpos, site_xmat), _ = jax.lax.scan(
-      step, (qpos, xpos, xquat, xmat, xipos, ximat, xanchor, xaxis, geom_xpos, geom_xmat, site_xpos, site_xmat),
+    (qpos, xpos, xquat, xmat, xipos, ximat, xanchor, xaxis, geom_xpos, geom_xmat), _ = jax.lax.scan(
+      step, (qpos, xpos, xquat, xmat, xipos, ximat, xanchor, xaxis, geom_xpos, geom_xmat),
       length=nstep, unroll=unroll_steps)
 
-    return qpos, xpos, xquat, xmat, xipos, ximat, xanchor, xaxis, geom_xpos, geom_xmat, site_xpos, site_xmat
+    return qpos, xpos, xquat, xmat, xipos, ximat, xanchor, xaxis, geom_xpos, geom_xmat
 
   output_dims = {
       "xpos": (nenv, m.nbody, 3),
@@ -150,12 +146,10 @@ def benchmark_raw_warp(
       "xaxis": (nenv, m.njnt, 3),
       "geom_xpos": (nenv, m.ngeom, 3),
       "geom_xmat": (nenv, m.ngeom, 3, 3),
-      "site_xpos": (nenv, m.nsite, 3),
-      "site_xmat": (nenv, m.nsite, 3, 3),
   }
   warp_kinematics_fn = warp_ffi.jax_callable(
     warp_kinematics,
-    num_outputs=11,
+    num_outputs=9,
     output_dims=output_dims,
   )
 
@@ -177,8 +171,7 @@ def benchmark_raw_warp(
   jit_time, run_time = _measure(
     jax_unroll_fn,
     dx.qpos, dx.xpos, dx.xquat, dx.xmat, dx.xipos, dx.ximat,
-    dx.xanchor, dx.xaxis, dx.geom_xpos, dx.geom_xmat,
-    dx.site_xpos, dx.site_xmat)
+    dx.xanchor, dx.xaxis, dx.geom_xpos, dx.geom_xmat)
   steps = nstep * nenv
 
   return jit_time, run_time, steps

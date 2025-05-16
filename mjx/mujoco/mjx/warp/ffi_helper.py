@@ -1,6 +1,5 @@
 """FFI helper functions for MJX."""
 
-import logging
 from typing import Any
 
 import numpy as np
@@ -10,19 +9,11 @@ import warp as wp
 def adr_arr_to_tuple(
     arr_val: wp.array(dtype=int), arr_adr: wp.array(dtype=int)
 ) -> tuple[wp.array, ...]:
-  # arr_list = []
-  # arr_adr = arr_adr.numpy()
-  # arr_val = arr_val.numpy()
-  # for i in range(len(arr_adr) - 1):
-  #   beg = arr_adr[i]
-  #   end = arr_adr[i + 1]
-  #   new_arr = wp.array(arr_val[beg:end])
-  #   arr_list.append(new_arr)
-  # return tuple(arr_list)
   arr_list = []
-  arr_adr = arr_adr.numpy()  # this is doing a host copy, can this be cached?
-  # arr_adr = [ 0 , 1, 13, 18, 21]
+  # arr_adr = arr_adr.numpy()  # this is doing a host copy which is no bueno, can this be cached?
+  arr_adr = [ 0,  1,  2,  6,  9, 13, 15, 17]
 
+  # create the tuple array by copying the pointers
   base_ptr = arr_val.ptr
   dtype = arr_val.dtype
   itemsize = wp.types.type_size_in_bytes(dtype)
@@ -47,11 +38,9 @@ def tuple_to_adr_arr(arr: tuple[Any, ...]) -> tuple[Any, Any]:
 
 
 def format_args_for_warp(
-    *args: Any, names: tuple[str, ...], kernel: Any
+    *args: Any, names: tuple[str, ...], kernel: Any, verbose: bool = False
 ) -> Any:
   """Formats args for warp assuming vmap_method="expand_dims"."""
-  logger = logging.getLogger('mujoco.mjx.warp.ffi_helper')
-
   new_args = [None] * len(args)
   annotations = tuple(kernel.__annotations__.items())
   for i in range(len(args)):
@@ -69,24 +58,26 @@ def format_args_for_warp(
       arg = args[i].reshape(args[i].shape[extra_dim:])
       arg.ndim = expected_ndim
       new_args[i] = arg
-      logger.debug(
-          "Removing extra dim: %s %s => %s",
-          names[i],
-          args[i].shape,
-          new_args[i].shape,  # pytype: disable=attribute-error
-      )
+      if verbose:
+        print(
+            "Removing extra dim: %s %s => %s",
+            names[i],
+            args[i].shape,
+            new_args[i].shape,  # pytype: disable=attribute-error
+        )
       # The annotation has larger ndim but the leading dim is 1.
       # Let's add a stride of 0 to the first axis.
       if new_args[i].ndim > 1 and new_args[i].shape[0] == 1:
         old_strides = new_args[i].strides
         new_args[i].strides = (0,) + new_args[i].strides[1:]
         new_args[i] = new_args[i]
-        logger.debug(
-            "Leading batch dim of 1, adding stride: %s %s => %s",
-            names[i],
-            old_strides,
-            new_args[i].strides,  # pytype: disable=attribute-error
-        )
+        if verbose:
+          print(
+              "Leading batch dim of 1, adding stride: %s %s => %s",
+              names[i],
+              old_strides,
+              new_args[i].strides,  # pytype: disable=attribute-error
+          )
       continue
 
     # Squash nested vmap batch axes.
@@ -94,12 +85,13 @@ def format_args_for_warp(
       extra_ndim = args[i].ndim - expected_ndim
       new_args[i] = args[i].reshape((-1,) + args[i].shape[extra_ndim + 1 :])
       new_args[i].ndim = expected_ndim
-      logger.debug(
-          "Squashing extra dim: %s %s => %s",
-          names[i],
-          args[i].shape,
-          new_args[i].shape,  # pytype: disable=attribute-error
-      )
+      if verbose:
+        print(
+            "Squashing extra dim: %s %s => %s",
+            names[i],
+            args[i].shape,
+            new_args[i].shape,  # pytype: disable=attribute-error
+        )
       continue
 
     # Add stride 0 to unbatched inputs that have the correct ndim.
@@ -110,12 +102,13 @@ def format_args_for_warp(
       old_strides = arg.strides
       arg.strides = (0,) + arg.strides[1:]
       new_args[i] = arg
-      logger.debug(
-          "Leading batch dim of 1, adding stride: %s %s => %s",
-          names[i],
-          old_strides,
-          new_args[i].strides,  # pytype: disable=attribute-error
-      )
+      if verbose:
+        print(
+            "Leading batch dim of 1, adding stride: %s %s => %s",
+            names[i],
+            old_strides,
+            new_args[i].strides,  # pytype: disable=attribute-error
+        )
       continue
 
     # Add batch dims if they don't exist. This occurs when the underlying
@@ -127,21 +120,23 @@ def format_args_for_warp(
       new_args[i] = args[i].reshape((1,) * extra_dims + args[i].shape)
       new_args[i].ndim = expected_ndim
       new_args[i].strides = (0,) + new_args[i].strides[1:]
-      logger.debug(
-          "No leading batch dims %s %s => %s",
-          names[i],
-          args[i].shape,
-          new_args[i].shape,  # pytype: disable=attribute-error
-      )
-      logger.debug(
-          "Adding stride: %s %s => %s",
-          names[i],
-          args[i].strides,
-          new_args[i].strides,  # pytype: disable=attribute-error
-      )
+      if verbose:
+        print(
+            "No leading batch dims %s %s => %s",
+            names[i],
+            args[i].shape,
+            new_args[i].shape,  # pytype: disable=attribute-error
+        )
+        print(
+            "Adding stride: %s %s => %s",
+            names[i],
+            args[i].strides,
+            new_args[i].strides,  # pytype: disable=attribute-error
+        )
       continue
 
     new_args[i] = args[i]
-    logger.debug("Did nothing: %s %s => %s", names[i], args[i].shape, new_args[i].shape)  # pytype: disable=attribute-error
+    if verbose:
+      print("Did nothing: %s %s => %s", names[i], args[i].shape, new_args[i].shape)  # pytype: disable=attribute-error
 
   return new_args

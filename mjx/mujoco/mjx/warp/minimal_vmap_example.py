@@ -14,10 +14,11 @@ from warp.jax_experimental import ffi as warp_ffi
 import mujoco
 from mujoco import mjx
 
-
 os.environ["XLA_FLAGS"] = (
     "--xla_gpu_graph_min_graph_size=1"
 )
+
+_LOOP_COUNT = 0
 _DO_MORE_WORK = flags.DEFINE_bool('do_more_work', False, 'Do more work in the jax_callable.')
 
 
@@ -58,20 +59,16 @@ def vmap(m, nenv, nstep, unroll_steps):
       xaxis: wp.array(dtype=wp.vec3),
       geom_xpos: wp.array(dtype=wp.vec3),
       geom_xmat: wp.array(dtype=wp.mat33),
-      site_xpos: wp.array(dtype=wp.vec3),
-      site_xmat: wp.array(dtype=wp.mat33),
   ):
     # Note: ideally we would be doing what is in smooth.py,
     # and calling format_args_for_warp. This example is illustrative
     # showing how _DO_MORE_WORK executes on every call even after jax.jit.
     if _DO_MORE_WORK.value:
-      a = 0
-      for _ in range(1_000_000):
-        a += 1
+      global _LOOP_COUNT
+      print(f"count: {_LOOP_COUNT}")
+      _LOOP_COUNT += 1
     wp.copy(_d.qpos, qpos)
     mjwarp.kinematics(_m, _d)
-    wp.copy(site_xmat, _d.site_xmat)
-    wp.copy(site_xpos, _d.site_xpos)
     wp.copy(xanchor, _d.xanchor)
     wp.copy(xaxis, _d.xaxis)
     wp.copy(ximat, _d.ximat)
@@ -82,28 +79,26 @@ def vmap(m, nenv, nstep, unroll_steps):
     wp.copy(geom_xmat, _d.geom_xmat)
     wp.copy(geom_xpos, _d.geom_xpos)
 
+  output_dims = {
+      "xpos": (m.nbody, 3),
+      "xquat": (m.nbody, 4),
+      "xmat": (m.nbody, 3, 3),
+      "xipos": (m.nbody, 3),
+      "ximat": (m.nbody, 3, 3),
+      "xanchor": (m.njnt, 3),
+      "xaxis": (m.njnt, 3),
+      "geom_xpos": (m.ngeom, 3),
+      "geom_xmat": (m.ngeom, 3, 3),
+  }
+  jf = warp_ffi.jax_callable(
+      _kinematics_shim,
+      num_outputs=9,
+      output_dims=output_dims,
+      vmap_method='broadcast_all',
+      graph_compatible=True,
+  )
 
   def kinematics(dx):
-    output_dims = {
-        "xpos": (m.nbody, 3),
-        "xquat": (m.nbody, 4),
-        "xmat": (m.nbody, 3, 3),
-        "xipos": (m.nbody, 3),
-        "ximat": (m.nbody, 3, 3),
-        "xanchor": (m.njnt, 3),
-        "xaxis": (m.njnt, 3),
-        "geom_xpos": (m.ngeom, 3),
-        "geom_xmat": (m.ngeom, 3, 3),
-        "site_xpos": (m.nsite, 3),
-        "site_xmat": (m.nsite, 3, 3),
-    }
-    jf = warp_ffi.jax_callable(
-        _kinematics_shim,
-        num_outputs=11,
-        output_dims=output_dims,
-        vmap_method='broadcast_all',
-        graph_compatible=True,
-    )
     out = jf(dx.qpos)
     dx = dx.replace(
         xpos=out[0],
@@ -115,8 +110,6 @@ def vmap(m, nenv, nstep, unroll_steps):
         xaxis=out[6],
         geom_xpos=out[7],
         geom_xmat=out[8],
-        site_xpos=out[9],
-        site_xmat=out[10],
     )
     return dx
 

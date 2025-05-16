@@ -241,7 +241,6 @@ def kinematics(m: types.Model, d: types.Data):
       num_outputs=11,
       output_dims=output_dims,
       vmap_method="expand_dims",
-      graph_compatible=True,
   )
   out = jf(
       m.ngeom,
