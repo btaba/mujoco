@@ -1,140 +1,167 @@
 """FFI helper functions for MJX."""
 
-from typing import Any
+import inspect
+import typing
+from typing import Any, Callable, Tuple
 
 import numpy as np
 import warp as wp
+import jax
+from warp.jax_experimental.ffi import jax_callable
 
 
-def adr_arr_to_tuple(
-    arr_val: wp.array(dtype=int), arr_adr: list[int]
-) -> tuple[wp.array, ...]:
-  arr_list = []
-  # create the tuple array by copying the pointers
-  base_ptr = arr_val.ptr
-  dtype = arr_val.dtype
-  itemsize = wp.types.type_size_in_bytes(dtype)
-  for i in range(len(arr_adr) - 1):
-    beg, end = int(arr_adr[i]), int(arr_adr[i + 1])
-    length = end - beg
-    if length == 0:
-      sub_array = wp.empty(shape=(0,), dtype=dtype, device=arr_val.device)
+def flatten_tuple_signature(signature: inspect.Signature, args: Tuple):
+  def expand_parameter(parameter, arg_iter):
+    if parameter.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD:
+      try:
+        arg = next(arg_iter)
+        # If it is a tuple, we need to duplicate the parameter for each element.
+        if isinstance(arg, tuple):
+          assert typing.get_origin(p.annotation) == tuple
+          type_args = typing.get_args(p.annotation)
+          if len(type_args) == 2 and type_args[1] == ...:
+            return [inspect.Parameter(
+                        f"{parameter.name}__{i}",
+                        parameter.kind,
+                        default=parameter.default,
+                        annotation=type_args[0])
+                for i in range(len(arg))]
+          else:
+            raise Exception("Unsupported tuple argument " +
+                    "(currently, only Tuple[t, ...] is supported).")
+      except StopIteration:
+        # We ran out input arguments.
+        # Let us keep output parameters as is.
+        pass
+      assert typing.get_origin(p.annotation) != tuple
+      return [parameter]
     else:
-      byte_offset = beg * itemsize
-      sub_ptr = base_ptr + byte_offset 
-      sub_array = wp.array(ptr=sub_ptr, shape=(length,), dtype=dtype, device=arr_val.device, deleter=None)
-    arr_list.append(sub_array)
-  return tuple(arr_list)
+      raise ValueError(f"Unsupported parameter kind: {parameter.kind}")
+  
+  parameters = []
+  arg_iter = iter(args)
+  for p in signature.parameters.values():
+    parameters.extend(expand_parameter(p, arg_iter))
+
+  return inspect.Signature(
+      parameters=parameters, return_annotation=signature.return_annotation
+  )
 
 
-def tuple_to_adr_arr(arr: tuple[Any, ...]) -> tuple[np.ndarray, np.ndarray]:
-  arr_val = np.concatenate(arr, dtype=np.int32)
-  arr_adr = np.cumsum([len(v) for v in arr], dtype=np.int32)
-  arr_adr = np.append(np.array(0), arr_adr).astype(np.int32)
-  return arr_val, arr_adr
+def jax_callable_variadic_tuple(
+    func: Callable,
+    num_outputs: int = 1,
+    *c_args, **c_kwargs,
+):
+  def callable_wrapper(*args, **kwargs):
+    def func_wrapper(*flat_args, **kwargs):
+      flat_inputs = flat_args[:-num_outputs]
+      outputs = flat_args[-num_outputs:]
+      unflat_inputs = jax.tree.unflatten(in_tree, flat_inputs)
+      return func(*unflat_inputs + outputs, **kwargs)   
+    # Provide a flattened signature for the Warp callable machinery.
+    func_wrapper.__signature__ = flatten_tuple_signature(inspect.signature(func), args)
+    my_callable = jax_callable(func_wrapper, num_outputs, *c_args, **c_kwargs)
+
+    # global_callable_keepalive.append(my_callable)
+    flat_args, in_tree = jax.tree.flatten(args)
+    return my_callable(*flat_args, **kwargs)
+
+  return callable_wrapper
+
+
+def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
+  typ_args = typing.get_args(annotation[1])
+  annotation_origin = typing.get_origin(annotation[1])
+  if annotation_origin == tuple and len(typ_args) == 2 and typ_args[1] == ...:
+     return tuple(
+        _format_arg(arg[i], name + f'_{i}', (name + f'_{i}', typ_args[0]), verbose)
+        for i in range(len(arg)))
+
+  if not hasattr(annotation[1], 'ndim'):
+    if verbose:
+      print(f'Skipping {name}: {arg}')
+    return arg
+
+  expected_ndim = annotation[1].ndim
+
+  # Remove the expanded_dim if we are exceeding the expected ndim.
+  # i.e. Unbatched model fields will get an extra dim due to
+  # vmap_method="expand_dims".
+  if arg.ndim > expected_ndim and arg.shape[0] == 1:
+    extra_dim = arg.ndim - expected_ndim
+    assert sum(arg.shape[:extra_dim]) == extra_dim
+    new_arg = arg.reshape(arg.shape[extra_dim:])
+    new_arg.ndim = expected_ndim
+    if verbose:
+      print(
+          f"Removing extra dim: {name} {arg.shape} => {new_arg.shape}"
+      )
+    # The annotation has larger ndim but the leading dim is 1.
+    # Let's add a stride of 0 to the first axis.
+    if new_arg.ndim > 1 and new_arg.shape[0] == 1:
+      old_strides = new_arg.strides
+      new_arg.strides = (0,) + new_arg.strides[1:]
+      if verbose:
+        print(
+            f"Leading batch dim of 1, adding stride: {name} {old_strides} => {new_arg.strides}"
+        )
+    return new_arg
+
+  # Squash nested vmap batch axes.
+  if arg.ndim > expected_ndim:
+    extra_ndim = arg.ndim - expected_ndim
+    new_arg = arg.reshape((-1,) + arg.shape[extra_ndim + 1 :])
+    new_arg.ndim = expected_ndim
+    if verbose:
+      print(
+          f"Squashing extra dim: {name} {arg.shape} => {new_arg.shape}"
+      )
+    return new_arg
+
+  # Add stride 0 to unbatched inputs that have the correct ndim.
+  # Unbatched inputs get a leading dimension of 1, using
+  # vmap_method="expand_dims". We add a stride of 0 to the leading dim.
+  if expected_ndim == arg.ndim and arg.shape[0] == 1:
+    arg = arg
+    old_strides = arg.strides
+    arg.strides = (0,) + arg.strides[1:]
+    new_arg = arg
+    if verbose:
+      print(
+          f"Leading batch dim of 1, adding stride: {name} {old_strides} => {new_arg.strides}"
+      )
+    return new_arg
+
+  # Add batch dims if they don't exist. This occurs when the underlying
+  # function expects a batch dim but the outer function was not called
+  # with vmap.
+  # e.g. Model/Data have nworld == 1, but without the leading dim in JAX.
+  if expected_ndim > arg.ndim:
+    extra_dims = expected_ndim - arg.ndim
+    new_arg = arg.reshape((1,) * extra_dims + arg.shape)
+    new_arg.ndim = expected_ndim
+    new_arg.strides = (0,) + new_arg.strides[1:]
+    if verbose:
+      print(
+          f"No leading batch dims {name} {arg.shape} => {new_arg.shape}"
+      )
+      print(
+          f"Adding stride: {name} {arg.strides} => {new_arg.strides}"
+      )
+    return new_arg
+
+  if verbose:
+    print(f"Did nothing: {name}: {arg.shape}")
+  return arg
 
 
 def format_args_for_warp(
     *args: Any, names: tuple[str, ...], kernel: Any, verbose: bool = False
 ) -> Any:
   """Formats args for warp assuming vmap_method="expand_dims"."""
-  new_args = [None] * len(args)
+  new_args = []
   annotations = tuple(kernel.__annotations__.items())
   for i in range(len(args)):
-    new_args[i] = args[i]
-    if not isinstance(annotations[i][1], wp.array):
-      continue
-    if not hasattr(annotations[i][1], 'ndim'):
-      continue
-    expected_ndim = annotations[i][1].ndim
-
-    # Remove the expanded_dim if we are exceeding the expected ndim.
-    # i.e. Unbatched model fields will get an extra dim due to
-    # vmap_method="expand_dims".
-    if args[i].ndim > expected_ndim and args[i].shape[0] == 1:
-      extra_dim = args[i].ndim - expected_ndim
-      assert sum(args[i].shape[:extra_dim]) == extra_dim
-      arg = args[i].reshape(args[i].shape[extra_dim:])
-      arg.ndim = expected_ndim
-      new_args[i] = arg
-      if verbose:
-        print(
-            "Removing extra dim: %s %s => %s",
-            names[i],
-            args[i].shape,
-            new_args[i].shape,  # pytype: disable=attribute-error
-        )
-      # The annotation has larger ndim but the leading dim is 1.
-      # Let's add a stride of 0 to the first axis.
-      if new_args[i].ndim > 1 and new_args[i].shape[0] == 1:
-        old_strides = new_args[i].strides
-        new_args[i].strides = (0,) + new_args[i].strides[1:]
-        new_args[i] = new_args[i]
-        if verbose:
-          print(
-              "Leading batch dim of 1, adding stride: %s %s => %s",
-              names[i],
-              old_strides,
-              new_args[i].strides,  # pytype: disable=attribute-error
-          )
-      continue
-
-    # Squash nested vmap batch axes.
-    if args[i].ndim > expected_ndim:
-      extra_ndim = args[i].ndim - expected_ndim
-      new_args[i] = args[i].reshape((-1,) + args[i].shape[extra_ndim + 1 :])
-      new_args[i].ndim = expected_ndim
-      if verbose:
-        print(
-            "Squashing extra dim: %s %s => %s",
-            names[i],
-            args[i].shape,
-            new_args[i].shape,  # pytype: disable=attribute-error
-        )
-      continue
-
-    # Add stride 0 to unbatched inputs that have the correct ndim.
-    # Unbatched inputs get a leading dimension of 1, using
-    # vmap_method="expand_dims". We add a stride of 0 to the leading dim.
-    if expected_ndim == args[i].ndim and args[i].shape[0] == 1:
-      arg = args[i]
-      old_strides = arg.strides
-      arg.strides = (0,) + arg.strides[1:]
-      new_args[i] = arg
-      if verbose:
-        print(
-            "Leading batch dim of 1, adding stride: %s %s => %s",
-            names[i],
-            old_strides,
-            new_args[i].strides,  # pytype: disable=attribute-error
-        )
-      continue
-
-    # Add batch dims if they don't exist. This occurs when the underlying
-    # function expects a batch dim but the outer function was not called
-    # with vmap.
-    # e.g. Model/Data have nworld == 1, but without the leading dim in JAX.
-    if expected_ndim > args[i].ndim:
-      extra_dims = expected_ndim - args[i].ndim
-      new_args[i] = args[i].reshape((1,) * extra_dims + args[i].shape)
-      new_args[i].ndim = expected_ndim
-      new_args[i].strides = (0,) + new_args[i].strides[1:]
-      if verbose:
-        print(
-            "No leading batch dims %s %s => %s",
-            names[i],
-            args[i].shape,
-            new_args[i].shape,  # pytype: disable=attribute-error
-        )
-        print(
-            "Adding stride: %s %s => %s",
-            names[i],
-            args[i].strides,
-            new_args[i].strides,  # pytype: disable=attribute-error
-        )
-      continue
-
-    if verbose:
-      print("Did nothing: %s %s => %s", names[i], args[i].shape, new_args[i].shape)  # pytype: disable=attribute-error
-
+    new_args.append(_format_arg(args[i], names[i], annotations[i], verbose))
   return new_args

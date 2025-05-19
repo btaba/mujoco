@@ -1,10 +1,10 @@
 import dataclasses
 import functools
+from typing import Tuple
 from mujoco.mjx._src import types
 from mujoco.mjx.warp import ffi_helper
 import mujoco_warp as mjwarp
 import warp as wp
-from warp.jax_experimental import ffi as warp_ffi
 
 _m = mjwarp.Model(
     **{f.name: None for f in dataclasses.fields(mjwarp.Model) if f.init}
@@ -15,14 +15,12 @@ _d = mjwarp.Data(
 
 
 def _kinematics(
-    # partials need to be first, since partial kwonlyargs don't work with warp
-    body_tree_adr: list[int],
     # Model
     ngeom: int,
     nsite: int,
     nmocap: int,
     qpos0: wp.array2d(dtype=float),
-    body_tree_val: wp.array(dtype=int),
+    body_tree: Tuple[wp.array(dtype=int), ...],
     body_parentid: wp.array(dtype=int),
     body_jntnum: wp.array(dtype=int),
     body_jntadr: wp.array(dtype=int),
@@ -64,8 +62,6 @@ def _kinematics(
   _m.body_parentid = body_parentid
   _m.body_pos = body_pos
   _m.body_quat = body_quat
-  # Need to figure out how to get the host and cache the body_tree_adr?
-  body_tree = ffi_helper.adr_arr_to_tuple(body_tree_val, body_tree_adr)
   _m.body_tree = body_tree
   _m.geom_bodyid = geom_bodyid
   _m.geom_pos = geom_pos
@@ -101,12 +97,11 @@ def _kinematics(
 
 
 def _kinematics_shim(
-    body_tree_adr: list[int],
     ngeom: int,
     nsite: int,
     nmocap: int,
     qpos0: wp.array(dtype=float),
-    body_tree_val: wp.array(dtype=int),
+    body_tree: Tuple[wp.array(dtype=int), ...],
     body_parentid: wp.array(dtype=int),
     body_jntnum: wp.array(dtype=int),
     body_jntadr: wp.array(dtype=int),
@@ -141,12 +136,11 @@ def _kinematics_shim(
     site_xmat: wp.array(dtype=wp.mat33),
 ):
   args = (
-      body_tree_adr,
       ngeom,
       nsite,
       nmocap,
       qpos0,
-      body_tree_val,
+      body_tree,
       body_parentid,
       body_jntnum,
       body_jntadr,
@@ -181,7 +175,6 @@ def _kinematics_shim(
       site_xmat,
   )
   names = (
-      "body_tree_adr",
       "ngeom",
       "nsite",
       "nmocap",
@@ -238,10 +231,8 @@ def kinematics(m: types.Model, d: types.Data):
       "site_xpos": (m.nsite, 3),
       "site_xmat": (m.nsite, 3, 3),
   }
-  body_tree_val, body_tree_adr = ffi_helper.tuple_to_adr_arr(m.body_tree)
-  _kinematics_shim_p = functools.partial(_kinematics_shim, body_tree_adr.tolist())
-  jf = warp_ffi.jax_callable(
-    _kinematics_shim_p,
+  jf = ffi_helper.jax_callable_variadic_tuple(
+    _kinematics_shim,
       num_outputs=11,
       output_dims=output_dims,
       vmap_method="expand_dims",
@@ -251,7 +242,7 @@ def kinematics(m: types.Model, d: types.Data):
       m.nsite,
       m.nmocap,
       m.qpos0,
-      body_tree_val,
+      m.body_tree,
       m.body_parentid,
       m.body_jntnum,
       m.body_jntadr,
