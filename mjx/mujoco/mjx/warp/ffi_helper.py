@@ -4,13 +4,13 @@ import inspect
 import typing
 from typing import Any, Callable, Tuple
 
-import numpy as np
-import warp as wp
 import jax
+import warp as wp
 from warp.jax_experimental.ffi import jax_callable
 
 
 def flatten_tuple_signature(signature: inspect.Signature, args: Tuple):
+  # https://gist.github.com/jaro-sevcik/cc90b939ecca86bee6f81e0bf560cc76
   def expand_parameter(parameter, arg_iter):
     if parameter.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD:
       try:
@@ -20,15 +20,20 @@ def flatten_tuple_signature(signature: inspect.Signature, args: Tuple):
           assert typing.get_origin(p.annotation) == tuple
           type_args = typing.get_args(p.annotation)
           if len(type_args) == 2 and type_args[1] == ...:
-            return [inspect.Parameter(
-                        f"{parameter.name}__{i}",
-                        parameter.kind,
-                        default=parameter.default,
-                        annotation=type_args[0])
-                for i in range(len(arg))]
+            return [
+                inspect.Parameter(
+                    f"{parameter.name}__{i}",
+                    parameter.kind,
+                    default=parameter.default,
+                    annotation=type_args[0],
+                )
+                for i in range(len(arg))
+            ]
           else:
-            raise Exception("Unsupported tuple argument " +
-                    "(currently, only Tuple[t, ...] is supported).")
+            raise NotImplementedError(
+                f"Unsupported tuple argument: {type_args} "
+                "(currently, only Tuple[t, ...] is supported)."
+            )
       except StopIteration:
         # We ran out input arguments.
         # Let us keep output parameters as is.
@@ -37,7 +42,7 @@ def flatten_tuple_signature(signature: inspect.Signature, args: Tuple):
       return [parameter]
     else:
       raise ValueError(f"Unsupported parameter kind: {parameter.kind}")
-  
+
   parameters = []
   arg_iter = iter(args)
   for p in signature.parameters.values():
@@ -49,18 +54,23 @@ def flatten_tuple_signature(signature: inspect.Signature, args: Tuple):
 
 
 def jax_callable_variadic_tuple(
-    func: Callable,
+    func: Callable,  # pylint: disable=g-bare-generic
     num_outputs: int = 1,
-    *c_args, **c_kwargs,
+    *c_args,
+    **c_kwargs,
 ):
+  """Wraps a JAX callable to flatten/unflatten variadic tuples."""
   def callable_wrapper(*args, **kwargs):
     def func_wrapper(*flat_args, **kwargs):
       flat_inputs = flat_args[:-num_outputs]
       outputs = flat_args[-num_outputs:]
       unflat_inputs = jax.tree.unflatten(in_tree, flat_inputs)
-      return func(*unflat_inputs + outputs, **kwargs)   
+      return func(*unflat_inputs + outputs, **kwargs)
+
     # Provide a flattened signature for the Warp callable machinery.
-    func_wrapper.__signature__ = flatten_tuple_signature(inspect.signature(func), args)
+    func_wrapper.__signature__ = flatten_tuple_signature(
+        inspect.signature(func), args
+    )
     my_callable = jax_callable(func_wrapper, num_outputs, *c_args, **c_kwargs)
 
     # global_callable_keepalive.append(my_callable)
@@ -71,17 +81,19 @@ def jax_callable_variadic_tuple(
 
 
 def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
+  """Formats a single argument for warp."""
   # Handle variadic tuples.
   typ_args = typing.get_args(annotation)
   annotation_origin = typing.get_origin(annotation)
   if annotation_origin == tuple and len(typ_args) == 2 and typ_args[1] == ...:
-     return tuple(
-        _format_arg(arg[i], name + f'_{i}', typ_args[0], verbose)
-        for i in range(len(arg)))
+    return tuple(
+        _format_arg(arg[i], name + f"_{i}", typ_args[0], verbose)
+        for i in range(len(arg))
+    )
 
   if not isinstance(annotation, wp.types.array):
     if verbose:
-      print(f'Skipping {name}: {arg}')
+      print(f"Skipping {name}: {arg}")
     return arg
 
   expected_ndim = annotation.ndim
@@ -95,9 +107,7 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
     new_arg = arg.reshape(arg.shape[extra_dim:])
     new_arg.ndim = expected_ndim
     if verbose:
-      print(
-          f"Removing extra dim: {name} {arg.shape} => {new_arg.shape}"
-      )
+      print(f"Removing extra dim: {name} {arg.shape} => {new_arg.shape}")
     # The annotation has larger ndim but the leading dim is 1.
     # Let's add a stride of 0 to the first axis.
     if new_arg.ndim > 1 and new_arg.shape[0] == 1:
@@ -105,7 +115,8 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
       new_arg.strides = (0,) + new_arg.strides[1:]
       if verbose:
         print(
-            f"Leading batch dim of 1, adding stride: {name} {old_strides} => {new_arg.strides}"
+            f"Leading batch dim of 1, adding stride: {name} {old_strides} =>"
+            f" {new_arg.strides}"
         )
     return new_arg
 
@@ -115,9 +126,7 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
     new_arg = arg.reshape((-1,) + arg.shape[extra_ndim + 1 :])
     new_arg.ndim = expected_ndim
     if verbose:
-      print(
-          f"Squashing extra dim: {name} {arg.shape} => {new_arg.shape}"
-      )
+      print(f"Squashing extra dim: {name} {arg.shape} => {new_arg.shape}")
     return new_arg
 
   # Add stride 0 to unbatched inputs that have the correct ndim.
@@ -130,7 +139,8 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
     new_arg = arg
     if verbose:
       print(
-          f"Leading batch dim of 1, adding stride: {name} {old_strides} => {new_arg.strides}"
+          f"Leading batch dim of 1, adding stride: {name} {old_strides} =>"
+          f" {new_arg.strides}"
       )
     return new_arg
 
@@ -144,12 +154,8 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
     new_arg.ndim = expected_ndim
     new_arg.strides = (0,) + new_arg.strides[1:]
     if verbose:
-      print(
-          f"No leading batch dims {name} {arg.shape} => {new_arg.shape}"
-      )
-      print(
-          f"Adding stride: {name} {arg.strides} => {new_arg.strides}"
-      )
+      print(f"No leading batch dims {name} {arg.shape} => {new_arg.shape}")
+      print(f"Adding stride: {name} {arg.strides} => {new_arg.strides}")
     return new_arg
 
   if verbose:
@@ -164,5 +170,7 @@ def format_args_for_warp(
   new_args = []
   annotations = kernel.__annotations__
   for i in range(len(args)):
-    new_args.append(_format_arg(args[i], names[i], annotations[names[i]], verbose))
+    new_args.append(
+        _format_arg(args[i], names[i], annotations[names[i]], verbose)
+    )
   return new_args

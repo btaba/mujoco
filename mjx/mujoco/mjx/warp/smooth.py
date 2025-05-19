@@ -1,6 +1,4 @@
 import dataclasses
-import functools
-from typing import Tuple
 from mujoco.mjx._src import types
 from mujoco.mjx.warp import ffi_helper
 import mujoco_warp as mjwarp
@@ -20,7 +18,7 @@ def _kinematics(
     nsite: int,
     nmocap: int,
     qpos0: wp.array2d(dtype=float),
-    body_tree: Tuple[wp.array(dtype=int), ...],
+    body_tree: tuple[wp.array(dtype=int), ...],
     body_parentid: wp.array(dtype=int),
     body_jntnum: wp.array(dtype=int),
     body_jntadr: wp.array(dtype=int),
@@ -101,7 +99,7 @@ def _kinematics_shim(
     nsite: int,
     nmocap: int,
     qpos0: wp.array(dtype=float),
-    body_tree: Tuple[wp.array(dtype=int), ...],
+    body_tree: tuple[wp.array(dtype=int), ...],
     body_parentid: wp.array(dtype=int),
     body_jntnum: wp.array(dtype=int),
     body_jntadr: wp.array(dtype=int),
@@ -231,11 +229,13 @@ def kinematics(m: types.Model, d: types.Data):
       "site_xpos": (m.nsite, 3),
       "site_xmat": (m.nsite, 3, 3),
   }
+
   jf = ffi_helper.jax_callable_variadic_tuple(
-    _kinematics_shim,
+      _kinematics_shim,
       num_outputs=11,
       output_dims=output_dims,
       vmap_method="expand_dims",
+      graph_compatible=True,
   )
   out = jf(
       m.ngeom,
