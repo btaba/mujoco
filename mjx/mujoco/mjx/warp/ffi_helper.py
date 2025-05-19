@@ -7,13 +7,9 @@ import warp as wp
 
 
 def adr_arr_to_tuple(
-    arr_val: wp.array(dtype=int), arr_adr: wp.array(dtype=int)
+    arr_val: wp.array(dtype=int), arr_adr: list[int]
 ) -> tuple[wp.array, ...]:
   arr_list = []
-  # arr_adr = arr_adr.numpy()  # this is doing a host copy which is no bueno, can this be cached?
-  # arr_adr = [ 0,  1,  2,  6,  9, 13, 15, 17]
-  arr_adr = [ 0 , 1, 13, 18, 21]
-
   # create the tuple array by copying the pointers
   base_ptr = arr_val.ptr
   dtype = arr_val.dtype
@@ -31,7 +27,7 @@ def adr_arr_to_tuple(
   return tuple(arr_list)
 
 
-def tuple_to_adr_arr(arr: tuple[Any, ...]) -> tuple[Any, Any]:
+def tuple_to_adr_arr(arr: tuple[Any, ...]) -> tuple[np.ndarray, np.ndarray]:
   arr_val = np.concatenate(arr, dtype=np.int32)
   arr_adr = np.cumsum([len(v) for v in arr], dtype=np.int32)
   arr_adr = np.append(np.array(0), arr_adr).astype(np.int32)
@@ -45,8 +41,10 @@ def format_args_for_warp(
   new_args = [None] * len(args)
   annotations = tuple(kernel.__annotations__.items())
   for i in range(len(args)):
+    new_args[i] = args[i]
+    if not isinstance(annotations[i][1], wp.array):
+      continue
     if not hasattr(annotations[i][1], 'ndim'):
-      new_args[i] = args[i]
       continue
     expected_ndim = annotations[i][1].ndim
 
@@ -136,7 +134,6 @@ def format_args_for_warp(
         )
       continue
 
-    new_args[i] = args[i]
     if verbose:
       print("Did nothing: %s %s => %s", names[i], args[i].shape, new_args[i].shape)  # pytype: disable=attribute-error
 
