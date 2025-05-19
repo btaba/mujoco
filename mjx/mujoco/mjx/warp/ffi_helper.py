@@ -71,19 +71,20 @@ def jax_callable_variadic_tuple(
 
 
 def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
-  typ_args = typing.get_args(annotation[1])
-  annotation_origin = typing.get_origin(annotation[1])
+  # Handle variadic tuples.
+  typ_args = typing.get_args(annotation)
+  annotation_origin = typing.get_origin(annotation)
   if annotation_origin == tuple and len(typ_args) == 2 and typ_args[1] == ...:
      return tuple(
-        _format_arg(arg[i], name + f'_{i}', (name + f'_{i}', typ_args[0]), verbose)
+        _format_arg(arg[i], name + f'_{i}', typ_args[0], verbose)
         for i in range(len(arg)))
 
-  if not hasattr(annotation[1], 'ndim'):
+  if not isinstance(annotation, wp.types.array):
     if verbose:
       print(f'Skipping {name}: {arg}')
     return arg
 
-  expected_ndim = annotation[1].ndim
+  expected_ndim = annotation.ndim
 
   # Remove the expanded_dim if we are exceeding the expected ndim.
   # i.e. Unbatched model fields will get an extra dim due to
@@ -161,7 +162,7 @@ def format_args_for_warp(
 ) -> Any:
   """Formats args for warp assuming vmap_method="expand_dims"."""
   new_args = []
-  annotations = tuple(kernel.__annotations__.items())
+  annotations = kernel.__annotations__
   for i in range(len(args)):
-    new_args.append(_format_arg(args[i], names[i], annotations[i], verbose))
+    new_args.append(_format_arg(args[i], names[i], annotations[names[i]], verbose))
   return new_args

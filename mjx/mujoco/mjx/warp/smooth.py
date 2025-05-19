@@ -179,7 +179,7 @@ def _kinematics_shim(
       "nsite",
       "nmocap",
       "qpos0",
-      "body_tree_val",
+      "body_tree",
       "body_parentid",
       "body_jntnum",
       "body_jntadr",
