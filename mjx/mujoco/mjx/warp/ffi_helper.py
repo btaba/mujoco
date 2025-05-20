@@ -63,8 +63,8 @@ def flatten_tuple_signature(signature: inspect.Signature, args: Tuple):
 def jax_callable_variadic_tuple(
     func: Callable,  # pylint: disable=g-bare-generic
     num_outputs: int = 1,
-    *c_args,
-    **c_kwargs,
+    *callable_args,
+    **callable_kwargs,
 ):
   """Wraps a JAX callable to flatten/unflatten variadic tuples."""
   def callable_wrapper(*args, **kwargs):
@@ -78,7 +78,10 @@ def jax_callable_variadic_tuple(
     func_wrapper.__signature__ = flatten_tuple_signature(
         inspect.signature(func), args
     )
-    my_callable = jax_callable(func_wrapper, num_outputs, *c_args, **c_kwargs)
+    my_callable = jax_callable(
+        func_wrapper, num_outputs,
+        *callable_args, **callable_kwargs
+    )
 
     flat_args, in_tree = jax.tree.flatten(args)
     return my_callable(*flat_args, **kwargs)
@@ -170,7 +173,7 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
 
 
 def format_args_for_warp(
-    *args: Any, names: tuple[str, ...], kernel: Any, verbose: bool = False
+    *args: Any, names: tuple[str, ...], kernel: Any, verbose: bool = True
 ) -> Any:
   """Formats args for warp assuming vmap_method="expand_dims"."""
   new_args = []

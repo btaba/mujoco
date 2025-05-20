@@ -1,27 +1,26 @@
 """Warp-specific types."""
 
+import dataclasses
 from typing import Tuple
 import jax
+from jax import tree_util
 from mujoco.mjx._src import dataclasses as mjx_dataclasses
 import numpy as np
-import dataclasses
 
 PyTreeNode = mjx_dataclasses.PyTreeNode
 
-from jax.tree_util import register_pytree_node_class
 
 @dataclasses.dataclass(frozen=True)
-@register_pytree_node_class
+@tree_util.register_pytree_node_class
 class TileSet:
   """Tiling configuration for decomposible block diagonal matrix."""
+
   adr: np.ndarray
   size: int
 
-  # Provide custom flatten/unflatten logic for FFI to expand
-  # fields for the JAX callable.
   def tree_flatten(self):
     children = (self.adr, self.size)
-    return children, None
+    return (children, None)
 
   @classmethod
   def tree_unflatten(cls, aux_data, children):
@@ -30,15 +29,45 @@ class TileSet:
     return cls(adr=adr_unflattened, size=size_unflattened)
 
 
+# @dataclasses.dataclass(frozen=True)
+# @tree_util.register_pytree_node_class
+class StatisticWarp(PyTreeNode):
+  """Derived fields from Statistic."""
+
+  meaninertia: float
+
+  # def tree_flatten(self):
+  #   return ((self.meaninertia,), None)
+
+  # @classmethod
+  # def tree_unflatten(cls, aux_data, children):
+  #   del aux_data
+  #   return cls(meaninertia=children[0])
+
+
 class OptionWarp(PyTreeNode):
   """Derived fields from Option."""
 
+  cone: int
+  density: float
   depth_extension: float
+  disableflags: int
   epa_exact_neg_distance: bool
   epa_iterations: int
   gjk_iterations: int
+  gravity: jax.Array
+  impratio: float
+  integrator: int
   is_sparse: bool
+  iterations: int
+  ls_iterations: int
   ls_parallel: bool
+  ls_tolerance: float
+  solver: int
+  timestep: float
+  tolerance: float
+  viscosity: float
+  wind: jax.Array
 
 
 class ModelWarp(PyTreeNode):

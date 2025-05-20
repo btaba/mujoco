@@ -213,15 +213,17 @@ def _put_option(
     return types.OptionC(**fields, **c_fields, **(impl_fields or {}))
 
   if backend_impl == types.BackendImpl.WARP:
-    warp_field_keys = types.OptionWarp.__annotations__.keys() - fields.keys()
+    warp_field_keys = (f.name for f in types.OptionWarp.fields())
     warp_fields = {k: getattr(o, k, None) for k in warp_field_keys}
-    return types.OptionWarp(**fields, **warp_fields, **(impl_fields or {}))
+    return types.OptionWarp(**{**warp_fields, **(impl_fields or {})})
 
   raise NotImplementedError(f'Unsupported backend: {backend_impl}')
 
 
-def _put_statistic(s: mujoco.MjStatistic) -> types.Statistic:
+def _put_statistic(s: mujoco.MjStatistic, backend_impl: types.BackendImpl) -> types.Statistic:
   """Puts mujoco.MjStatistic onto a device, resulting in mjx.Statistic."""
+  if backend_impl == types.BackendImpl.WARP:
+    return types.StatisticWarp(s.meaninertia)
   return types.Statistic(
       meaninertia=s.meaninertia,
       meanmass=s.meanmass,
@@ -293,7 +295,7 @@ def _put_model_jax(
   fields = {f: getattr(m, f) for f in mj_field_names}
   fields['cam_mat0'] = fields['cam_mat0'].reshape((-1, 3, 3))
   fields['opt'] = _put_option(m.opt, types.BackendImpl.JAX)
-  fields['stat'] = _put_statistic(m.stat)
+  fields['stat'] = _put_statistic(m.stat, types.BackendImpl.JAX)
 
   fields_jax = {}
   fields_jax['dof_hasfrictionloss'] = fields['dof_frictionloss'] > 0
@@ -350,7 +352,7 @@ def _put_model_c(
   fields = {f: getattr(m, f) for f in mj_field_names}
   fields['cam_mat0'] = fields['cam_mat0'].reshape((-1, 3, 3))
   fields['opt'] = _put_option(m.opt, backend_impl=types.BackendImpl.C)
-  fields['stat'] = _put_statistic(m.stat)
+  fields['stat'] = _put_statistic(m.stat, types.BackendImpl.C)
 
   c_impl_keys = (
       types.ModelC.__annotations__.keys() - types.Model.__annotations__.keys()
@@ -376,23 +378,43 @@ def _put_model_warp(
   # Exclude _impl when creating the set of field names
   mj_field_names = {f.name for f in types.Model.fields() if f.name != '_impl'}
   fields = {f: getattr(m, f) for f in mj_field_names}
+  # TODO(btaba): consolidate option creation...
   warp_option_keys = {f.name for f in types.OptionWarp.fields()} - {
       f.name for f in types.Option.fields()
   }
   warp_options = {k: getattr(mw.opt, k) for k in warp_option_keys}
   fields['opt'] = _put_option(m.opt, types.BackendImpl.WARP, warp_options)
-  fields['stat'] = _put_statistic(m.stat)
+  fields['stat'] = _put_statistic(m.stat, types.BackendImpl.WARP)
+  fields['cam_mat0'] = fields['cam_mat0'].reshape((-1, 3, 3))
 
   warp_impl_keys = (
       mjx_warp_types.ModelWarp.__annotations__.keys()
       - types.Model.__annotations__.keys()
   )
 
+  # Use mjwarp dtypes instead of MuJoCo ones.
+  for k, v in fields.items():
+    if not hasattr(mw, k):
+      continue
+    attr = getattr(mw, k)
+    if not hasattr(attr, 'dtype'):
+      continue
+    wp_dtype = attr.dtype
+    if hasattr(wp_dtype, '_wp_scalar_type_'):
+      wp_dtype = wp_dtype._wp_scalar_type_
+    if wp_dtype in wp.types.warp_type_to_np_dtype:
+      np_dtype = wp.types.warp_type_to_np_dtype[wp_dtype]
+      fields[k] = v.astype(np_dtype)
+
   warp_impl = {}
   for k in warp_impl_keys:
     field = getattr(mw, k)
     if isinstance(field, wp.types.array):
       field = field.numpy()
+      if len(field.shape) > 1 and field.shape[0] == 1:
+        # Handle fields that were modified through create_nmodel_batched_array.
+        # We let JAX do the batching, hence we pre-flatten these fields.
+        field = np.squeeze(field, axis=0)
     elif hasattr(field, 'value'):
       field = field.value
     elif isinstance(field, (bool, int, np.int32, np.bool)):
@@ -778,6 +800,10 @@ def _make_data_warp(
     field = _get_nested_attr(dw, k, split='__')
     if isinstance(field, wp.types.array):
       field = field.numpy()  # deferring device_put avoids segfaults
+      if len(field.shape) > 1 and field.shape[0] == 1:
+        # Handle fields that were modified through create_nmodel_batched_array.
+        # We let JAX do the batching, hence we pre-flatten these fields.
+        field = np.squeeze(field, axis=0)
     elif hasattr(field, 'value'):
       field = field.value
     elif isinstance(field, (bool, int, np.bool, np.int32)):
@@ -791,10 +817,28 @@ def _make_data_warp(
     # print(k, type(field), field.shape, field.dtype)
     warp_impl[k] = copy.copy(field)
 
+  public_fields = _make_data_public_fields(m)
+  for k in public_fields:
+    if not hasattr(dw, k):
+      print(f'>> MjWarp does not have public Data field: {k}')
+      public_fields[k] = None
+      continue
+    attr = getattr(dw, k)
+    if attr.shape == (1,) and public_fields[k].shape == ():
+      public_fields[k] = public_fields[k][None]
+    if not hasattr(attr, 'dtype'):
+      continue
+    wp_dtype = attr.dtype
+    if hasattr(wp_dtype, '_wp_scalar_type_'):
+      wp_dtype = wp_dtype._wp_scalar_type_
+    if wp_dtype in wp.types.warp_type_to_np_dtype:
+      np_dtype = wp.types.warp_type_to_np_dtype[wp_dtype]
+      public_fields[k] = public_fields[k].astype(np_dtype)
+
   data = types.Data(
       qpos=jp.array(m.qpos0.astype(np.float32), dtype=float),
-      eq_active=m.eq_active0,
-      **_make_data_public_fields(m),
+      eq_active=m.eq_active0.astype(bool),
+      **public_fields,
       _impl=mjx_warp_types.DataWarp(**warp_impl),
   )
 
