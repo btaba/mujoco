@@ -181,4 +181,8 @@ class WarpForwardTest(absltest.TestCase):
 
 
 if __name__ == '__main__':
+  wp.config.verbose = True
+  wp.config.print_launches = True
+  wp.config.mode = 'debug'
+
   absltest.main()

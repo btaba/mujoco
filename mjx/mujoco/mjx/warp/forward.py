@@ -11,7 +11,18 @@ _m = mjwarp.Model(
 _d = mjwarp.Data(
     **{f.name: None for f in dataclasses.fields(mjwarp.Data) if f.init}
 )
-
+_o = mjwarp.Option(
+   **{f.name: None for f in dataclasses.fields(mjwarp.Option) if f.init}
+)
+_s = mjwarp.Statistic(
+   **{f.name: None for f in dataclasses.fields(mjwarp.Statistic) if f.init}
+)
+_c = mjwarp.Contact(
+   **{f.name: None for f in dataclasses.fields(mjwarp.Contact) if f.init}
+)
+_e = mjwarp.Constraint(
+   **{f.name: None for f in dataclasses.fields(mjwarp.Constraint) if f.init}
+)
 
 def _forward(
     # Model
@@ -468,6 +479,7 @@ def _forward(
   _m.nv = nv
   _m.nxn_geom_pair = nxn_geom_pair
   _m.nxn_pairid = nxn_pairid
+  _m.opt = _o
   _m.opt.cone = opt__cone
   _m.opt.density = opt__density
   _m.opt.disableflags = opt__disableflags
@@ -508,6 +520,7 @@ def _forward(
   _m.site_bodyid = site_bodyid
   _m.site_pos = site_pos
   _m.site_quat = site_quat
+  _m.stat = _s
   _m.stat.meaninertia = stat__meaninertia
   _m.subtree_mass = subtree_mass
   _m.ten_wrapadr_site = ten_wrapadr_site
@@ -546,6 +559,7 @@ def _forward(
   _d.collision_pair = collision_pair
   _d.collision_pairid = collision_pairid
   _d.collision_worldid = collision_worldid
+  _d.contact = _c
   _d.contact.dim = contact__dim
   _d.contact.dist = contact__dist
   _d.contact.efc_address = contact__efc_address
@@ -561,6 +575,7 @@ def _forward(
   _d.crb = crb
   _d.ctrl = ctrl
   _d.cvel = cvel
+  _d.efc = _e
   _d.efc.D = efc__D
   _d.efc.J = efc__J
   _d.efc.Jaref = efc__Jaref
@@ -1820,7 +1835,7 @@ def forward(m: types.Model, d: types.Data):
       num_outputs=120,
       output_dims=output_dims,
       vmap_method="expand_dims",
-      graph_compatible=True,
+      graph_compatible=False,
   )
   out = jf(
       m.nv,
