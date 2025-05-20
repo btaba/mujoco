@@ -2,6 +2,7 @@ import dataclasses
 from mujoco.mjx._src import types
 from mujoco.mjx.warp import ffi_helper
 import mujoco_warp as mjwarp
+from mujoco_warp._src import types as mjwarp_types
 import warp as wp
 
 _m = mjwarp.Model(
@@ -217,17 +218,17 @@ def _kinematics_shim(
 
 def kinematics(m: types.Model, d: types.Data):
   output_dims = {
-      "xpos": (m.nbody, 3),
-      "xquat": (m.nbody, 4),
-      "xmat": (m.nbody, 3, 3),
-      "xipos": (m.nbody, 3),
-      "ximat": (m.nbody, 3, 3),
-      "xanchor": (m.njnt, 3),
-      "xaxis": (m.njnt, 3),
-      "geom_xpos": (m.ngeom, 3),
-      "geom_xmat": (m.ngeom, 3, 3),
-      "site_xpos": (m.nsite, 3),
-      "site_xmat": (m.nsite, 3, 3),
+      "xpos": d.xpos.shape,
+      "xquat": d.xquat.shape,
+      "xmat": d.xmat.shape,
+      "xipos": d.xipos.shape,
+      "ximat": d.ximat.shape,
+      "xanchor": d.xanchor.shape,
+      "xaxis": d.xaxis.shape,
+      "geom_xpos": d.geom_xpos.shape,
+      "geom_xmat": d.geom_xmat.shape,
+      "site_xpos": d.site_xpos.shape,
+      "site_xmat": d.site_xmat.shape,
   }
 
   jf = ffi_helper.jax_callable_variadic_tuple(
@@ -242,7 +243,7 @@ def kinematics(m: types.Model, d: types.Data):
       m.nsite,
       m.nmocap,
       m.qpos0,
-      m.body_tree,
+      m._impl.body_tree,
       m.body_parentid,
       m.body_jntnum,
       m.body_jntadr,
@@ -260,7 +261,7 @@ def kinematics(m: types.Model, d: types.Data):
       m.site_bodyid,
       m.site_pos,
       m.site_quat,
-      m.mocap_bodyid,
+      m._impl.mocap_bodyid,
       d.qpos,
       d.mocap_pos,
       d.mocap_quat,

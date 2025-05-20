@@ -31,6 +31,7 @@ from mujoco.mjx._src import smooth
 from mujoco.mjx._src import solver
 from mujoco.mjx._src import support
 # pylint: disable=g-importing-member
+from mujoco.mjx._src.types import BackendImpl
 from mujoco.mjx._src.types import BiasType
 from mujoco.mjx._src.types import Data
 from mujoco.mjx._src.types import DataJAX
@@ -44,6 +45,8 @@ from mujoco.mjx._src.types import ModelJAX
 from mujoco.mjx._src.types import TrnType
 # pylint: enable=g-importing-member
 import numpy as np
+from mujoco.mjx.warp import forward as wp_forward
+
 
 # RK4 tableau
 _RK4_A = np.array([
@@ -421,6 +424,9 @@ def implicit(m: Model, d: Data) -> Data:
 @named_scope
 def forward(m: Model, d: Data) -> Data:
   """Forward dynamics."""
+  if m.backend_impl == BackendImpl.WARP and d.backend_impl == BackendImpl.WARP:
+    return wp_forward.forward(m, d)
+
   if not isinstance(m._impl, ModelJAX) or not isinstance(d._impl, DataJAX):
     raise ValueError('forward requires JAX backend implementation.')
 

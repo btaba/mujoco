@@ -2,17 +2,32 @@
 
 from typing import Tuple
 import jax
-from mujoco.mjx._src import dataclasses
+from mujoco.mjx._src import dataclasses as mjx_dataclasses
 import numpy as np
+import dataclasses
 
-PyTreeNode = dataclasses.PyTreeNode
+PyTreeNode = mjx_dataclasses.PyTreeNode
 
+from jax.tree_util import register_pytree_node_class
 
-class TileSet(PyTreeNode):
+@dataclasses.dataclass(frozen=True)
+@register_pytree_node_class
+class TileSet:
   """Tiling configuration for decomposible block diagonal matrix."""
-
   adr: np.ndarray
   size: int
+
+  # Provide custom flatten/unflatten logic for FFI to expand
+  # fields for the JAX callable.
+  def tree_flatten(self):
+    children = (self.adr, self.size)
+    return children, None
+
+  @classmethod
+  def tree_unflatten(cls, aux_data, children):
+    del aux_data
+    adr_unflattened, size_unflattened = children
+    return cls(adr=adr_unflattened, size=size_unflattened)
 
 
 class OptionWarp(PyTreeNode):
@@ -43,12 +58,29 @@ class ModelWarp(PyTreeNode):
   eq_jnt_adr: np.ndarray
   eq_ten_adr: np.ndarray
   eq_wld_adr: np.ndarray
+  flex_damping: jax.Array
+  flex_dim: jax.Array
+  flex_edge: jax.Array
+  flex_edgeadr: jax.Array
+  flex_elem: jax.Array
+  flex_elemedge: jax.Array
+  flex_elemedgeadr: jax.Array
+  flex_stiffness: jax.Array
+  flex_vertadr: jax.Array
+  flex_vertbodyid: jax.Array
+  flex_vertnum: jax.Array
+  flexedge_length0: jax.Array
   jnt_limited_ball_adr: np.ndarray
   jnt_limited_slide_hinge_adr: np.ndarray
   light_bodyid: jax.Array
   light_targetbodyid: jax.Array
   mapM2M: jax.Array
   mocap_bodyid: jax.Array
+  nflex: int
+  nflexedge: int
+  nflexelem: int
+  nflexelemdata: int
+  nflexvert: int
   nlsp: int
   nxn_geom_pair: np.ndarray
   nxn_pairid: np.ndarray
@@ -63,6 +95,7 @@ class ModelWarp(PyTreeNode):
   sensor_pos_adr: np.ndarray
   sensor_rne_postconstraint: bool
   sensor_subtree_vel: bool
+  sensor_touch_adr: np.ndarray
   sensor_vel_adr: np.ndarray
   subtree_mass: jax.Array
   ten_wrapadr_site: jax.Array
@@ -160,6 +193,11 @@ class DataWarp(PyTreeNode):
   efc__uv: np.ndarray
   efc__vv: np.ndarray
   efc__worldid: np.ndarray
+  energy: jax.Array
+  flexedge_length: jax.Array
+  flexedge_velocity: jax.Array
+  flexvert_xpos: jax.Array
+  fluid_applied: jax.Array
   light_xdir: jax.Array
   light_xpos: jax.Array
   ncollision: jax.Array

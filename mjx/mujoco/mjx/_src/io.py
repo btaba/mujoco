@@ -28,8 +28,9 @@ from mujoco.mjx._src import constraint
 from mujoco.mjx._src import mesh
 from mujoco.mjx._src import support
 from mujoco.mjx._src import types
-from mujoco.mjx.warp import types as warp_types
+from mujoco.mjx.warp import types as mjx_warp_types
 import mujoco_warp as mjwarp
+from mujoco_warp._src import types as mjwarp_types
 import numpy as np
 import scipy
 import warp as wp
@@ -383,7 +384,7 @@ def _put_model_warp(
   fields['stat'] = _put_statistic(m.stat)
 
   warp_impl_keys = (
-      warp_types.ModelWarp.__annotations__.keys()
+      mjx_warp_types.ModelWarp.__annotations__.keys()
       - types.Model.__annotations__.keys()
   )
 
@@ -394,18 +395,19 @@ def _put_model_warp(
       field = field.numpy()
     elif hasattr(field, 'value'):
       field = field.value
-    elif isinstance(field, (bool, int, np.int32)):
+    elif isinstance(field, (bool, int, np.int32, np.bool)):
       pass
     elif isinstance(field, tuple) and isinstance(field[0], wp.types.array):
       field = tuple(f.numpy() for f in field)
+    elif isinstance(field, tuple) and isinstance(field[0], mjwarp_types.TileSet):
+      field = tuple(mjx_warp_types.TileSet(field[i].adr.numpy(), field[i].size) for i in range(len(field)))
     else:
-      print('Model', k, field, type(field))
-      field = None
+      raise NotImplementedError(f'Model field {k} has unsupported type {type(field)}.')
     warp_impl[k] = copy.copy(field)
 
   model = types.Model(
       **{k: copy.copy(v) for k, v in fields.items()},
-      _impl=warp_types.ModelWarp(**warp_impl),
+      _impl=mjx_warp_types.ModelWarp(**warp_impl),
   )
 
   model = jax.device_put(model, device=device)
@@ -767,7 +769,7 @@ def _make_data_warp(
     dw = mjwarp.make_data(m)
 
   warp_impl_keys = (
-      warp_types.DataWarp.__annotations__.keys()
+      mjx_warp_types.DataWarp.__annotations__.keys()
       - types.Data.__annotations__.keys()
   )
 
@@ -778,13 +780,14 @@ def _make_data_warp(
       field = field.numpy()  # deferring device_put avoids segfaults
     elif hasattr(field, 'value'):
       field = field.value
-    elif isinstance(field, (bool, int)):
+    elif isinstance(field, (bool, int, np.bool, np.int32)):
       pass
     elif isinstance(field, tuple) and isinstance(field[0], wp.types.array):
       field = tuple(f.numpy() for f in field)
     else:
-      print(k, field)
-      field = np.zeros(1)  # Do not set None, might dereference nullptr later
+      raise NotImplementedError(f'Data field {k} has unsupported type {type(field)}.')
+      # print(k, field)
+      # field = np.zeros(1)  # Do not set None, might dereference nullptr later
     # print(k, type(field), field.shape, field.dtype)
     warp_impl[k] = copy.copy(field)
 
@@ -792,7 +795,7 @@ def _make_data_warp(
       qpos=jp.array(m.qpos0.astype(np.float32), dtype=float),
       eq_active=m.eq_active0,
       **_make_data_public_fields(m),
-      _impl=warp_types.DataWarp(**warp_impl),
+      _impl=mjx_warp_types.DataWarp(**warp_impl),
   )
 
   data = jax.device_put(data, device=device)

@@ -17,17 +17,24 @@ def flatten_tuple_signature(signature: inspect.Signature, args: Tuple):
         arg = next(arg_iter)
         # If it is a tuple, we need to duplicate the parameter for each element.
         if isinstance(arg, tuple):
-          assert typing.get_origin(p.annotation) == tuple
+          assert typing.get_origin(p.annotation) == tuple, p.annotation
           type_args = typing.get_args(p.annotation)
           if len(type_args) == 2 and type_args[1] == ...:
+            type_ = type_args[0]
+            types = [type_]
+            if hasattr(type_, '__dataclass_fields__'):
+              # If the tuple element is a dataclass, we need to recycle the types
+              # in order of the fields.
+              fields = list(type_.__dataclass_fields__.values())
+              types = [f.type for f in fields]
             return [
                 inspect.Parameter(
                     f"{parameter.name}__{i}",
                     parameter.kind,
                     default=parameter.default,
-                    annotation=type_args[0],
+                    annotation=types[i % len(types)],
                 )
-                for i in range(len(arg))
+                for i in range(len(arg) * len(types))
             ]
           else:
             raise NotImplementedError(
@@ -38,7 +45,7 @@ def flatten_tuple_signature(signature: inspect.Signature, args: Tuple):
         # We ran out input arguments.
         # Let us keep output parameters as is.
         pass
-      assert typing.get_origin(p.annotation) != tuple
+      assert typing.get_origin(p.annotation) != tuple, p.annotation
       return [parameter]
     else:
       raise ValueError(f"Unsupported parameter kind: {parameter.kind}")
@@ -73,7 +80,6 @@ def jax_callable_variadic_tuple(
     )
     my_callable = jax_callable(func_wrapper, num_outputs, *c_args, **c_kwargs)
 
-    # global_callable_keepalive.append(my_callable)
     flat_args, in_tree = jax.tree.flatten(args)
     return my_callable(*flat_args, **kwargs)
 
