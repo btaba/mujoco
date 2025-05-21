@@ -68,7 +68,6 @@ class WarpForwardTest(absltest.TestCase):
     mocap_quat = math.normalize(mocap_quat)
     dx = dx.replace(qpos=qpos, mocap_pos=mocap_pos, mocap_quat=mocap_quat)
 
-    # import IPython; IPython.embed(user_ns=dict(globals(), **locals()))
     dx = jax.jit(mjx.forward)(mx, dx)
 
     d.qpos[:] = qpos

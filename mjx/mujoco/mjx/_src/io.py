@@ -215,6 +215,9 @@ def _put_option(
   if backend_impl == types.BackendImpl.WARP:
     warp_field_keys = (f.name for f in types.OptionWarp.fields())
     warp_fields = {k: getattr(o, k, None) for k in warp_field_keys}
+    # fields passed as array rather than vector to warp need an extra dim.
+    warp_fields['gravity'] = warp_fields['gravity'][None]
+    warp_fields['wind'] = warp_fields['wind'][None]
     return types.OptionWarp(**{**warp_fields, **(impl_fields or {})})
 
   raise NotImplementedError(f'Unsupported backend: {backend_impl}')
