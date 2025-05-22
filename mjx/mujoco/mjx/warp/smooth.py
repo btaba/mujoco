@@ -11,6 +11,18 @@ _m = mjwarp.Model(
 _d = mjwarp.Data(
     **{f.name: None for f in dataclasses.fields(mjwarp.Data) if f.init}
 )
+_o = mjwarp.Option(
+    **{f.name: None for f in dataclasses.fields(mjwarp.Option) if f.init}
+)
+_s = mjwarp.Statistic(
+    **{f.name: None for f in dataclasses.fields(mjwarp.Statistic) if f.init}
+)
+_c = mjwarp.Contact(
+    **{f.name: None for f in dataclasses.fields(mjwarp.Contact) if f.init}
+)
+_e = mjwarp.Constraint(
+    **{f.name: None for f in dataclasses.fields(mjwarp.Constraint) if f.init}
+)
 
 
 def _kinematics(
@@ -54,6 +66,10 @@ def _kinematics(
     site_xpos: wp.array2d(dtype=wp.vec3),
     site_xmat: wp.array2d(dtype=wp.mat33),
 ):
+  _m.stat = _s
+  _m.opt = _o
+  _d.efc = _e
+  _d.contact = _c
   _m.body_ipos = body_ipos
   _m.body_iquat = body_iquat
   _m.body_jntadr = body_jntadr
@@ -278,5 +294,162 @@ def kinematics(m: types.Model, d: types.Data):
       "geom_xmat": out[8],
       "site_xpos": out[9],
       "site_xmat": out[10],
+  })
+  return d
+
+
+def _com_pos(
+    # Model
+    nbody: int,
+    njnt: int,
+    body_tree: tuple[wp.array(dtype=int), ...],
+    body_parentid: wp.array(dtype=int),
+    body_rootid: wp.array(dtype=int),
+    body_mass: wp.array2d(dtype=float),
+    subtree_mass: wp.array2d(dtype=float),
+    body_inertia: wp.array2d(dtype=wp.vec3),
+    jnt_type: wp.array(dtype=int),
+    jnt_dofadr: wp.array(dtype=int),
+    jnt_bodyid: wp.array(dtype=int),
+    # Data
+    xmat: wp.array2d(dtype=wp.mat33),
+    xipos: wp.array2d(dtype=wp.vec3),
+    ximat: wp.array2d(dtype=wp.mat33),
+    xanchor: wp.array2d(dtype=wp.vec3),
+    xaxis: wp.array2d(dtype=wp.vec3),
+    subtree_com: wp.array2d(dtype=wp.vec3),
+    cdof: wp.array2d(dtype=wp.spatial_vector),
+    cinert: wp.array2d(dtype=mjwarp_types.vec10),
+):
+  _m.stat = _s
+  _m.opt = _o
+  _d.efc = _e
+  _d.contact = _c
+  _m.body_inertia = body_inertia
+  _m.body_mass = body_mass
+  _m.body_parentid = body_parentid
+  _m.body_rootid = body_rootid
+  _m.body_tree = body_tree
+  _m.jnt_bodyid = jnt_bodyid
+  _m.jnt_dofadr = jnt_dofadr
+  _m.jnt_type = jnt_type
+  _m.nbody = nbody
+  _m.njnt = njnt
+  _m.subtree_mass = subtree_mass
+  _d.cdof = cdof
+  _d.cinert = cinert
+  _d.subtree_com = subtree_com
+  _d.xanchor = xanchor
+  _d.xaxis = xaxis
+  _d.ximat = ximat
+  _d.xipos = xipos
+  _d.xmat = xmat
+  _d.nworld = _d.qpos.shape[0]
+  mjwarp.com_pos(_m, _d)
+
+
+def _com_pos_shim(
+    nbody: int,
+    njnt: int,
+    body_tree: tuple[wp.array(dtype=int), ...],
+    body_parentid: wp.array(dtype=int),
+    body_rootid: wp.array(dtype=int),
+    body_mass: wp.array(dtype=float),
+    subtree_mass: wp.array(dtype=float),
+    body_inertia: wp.array(dtype=wp.vec3),
+    jnt_type: wp.array(dtype=int),
+    jnt_dofadr: wp.array(dtype=int),
+    jnt_bodyid: wp.array(dtype=int),
+    xmat: wp.array(dtype=wp.mat33),
+    xipos: wp.array(dtype=wp.vec3),
+    ximat: wp.array(dtype=wp.mat33),
+    xanchor: wp.array(dtype=wp.vec3),
+    xaxis: wp.array(dtype=wp.vec3),
+    subtree_com: wp.array(dtype=wp.vec3),
+    cdof: wp.array(dtype=wp.spatial_vector),
+    cinert: wp.array(dtype=mjwarp_types.vec10),
+):
+  args = (
+      nbody,
+      njnt,
+      body_tree,
+      body_parentid,
+      body_rootid,
+      body_mass,
+      subtree_mass,
+      body_inertia,
+      jnt_type,
+      jnt_dofadr,
+      jnt_bodyid,
+      xmat,
+      xipos,
+      ximat,
+      xanchor,
+      xaxis,
+      subtree_com,
+      cdof,
+      cinert,
+  )
+  names = (
+      "nbody",
+      "njnt",
+      "body_tree",
+      "body_parentid",
+      "body_rootid",
+      "body_mass",
+      "subtree_mass",
+      "body_inertia",
+      "jnt_type",
+      "jnt_dofadr",
+      "jnt_bodyid",
+      "xmat",
+      "xipos",
+      "ximat",
+      "xanchor",
+      "xaxis",
+      "subtree_com",
+      "cdof",
+      "cinert",
+  )
+  args = ffi_helper.format_args_for_warp(*args, names=names, kernel=_com_pos)
+  _com_pos(*args)
+
+
+def com_pos(m: types.Model, d: types.Data):
+  output_dims = {
+      "subtree_com": d.subtree_com.shape,
+      "cdof": d._impl.cdof.shape,
+      "cinert": d._impl.cinert.shape,
+  }
+
+  jf = ffi_helper.jax_callable_variadic_tuple(
+      _com_pos_shim,
+      num_outputs=3,
+      output_dims=output_dims,
+      vmap_method="expand_dims",
+      graph_compatible=True,
+  )
+  out = jf(
+      m.nbody,
+      m.njnt,
+      m._impl.body_tree,
+      m.body_parentid,
+      m.body_rootid,
+      m.body_mass,
+      m._impl.subtree_mass,
+      m.body_inertia,
+      m.jnt_type,
+      m.jnt_dofadr,
+      m.jnt_bodyid,
+      d.xmat,
+      d.xipos,
+      d.ximat,
+      d.xanchor,
+      d.xaxis,
+  )
+  d = d.tree_replace({
+      "subtree_com": out[0],
+      "_impl.cdof": out[1],
+      "_impl.cinert": out[2],
   })
   return d

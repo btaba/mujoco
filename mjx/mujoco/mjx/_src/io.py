@@ -215,6 +215,26 @@ def _put_option(
   if backend_impl == types.BackendImpl.WARP:
     warp_field_keys = (f.name for f in types.OptionWarp.fields())
     warp_fields = {k: getattr(o, k, None) for k in warp_field_keys}
+    # Use mjwarp dtypes.
+    # for k, v in warp_fields.items():
+    #   wp_dtype = type(v)
+    #   if hasattr(v, 'dtype'):
+    #     wp_dtype.dtype
+    #   if hasattr(wp_dtype, '_wp_scalar_type_'):
+    #     wp_dtype = wp_dtype._wp_scalar_type_
+    #   if wp_dtype in wp.types.warp_type_to_np_dtype:
+    #     np_dtype = wp.types.warp_type_to_np_dtype[wp_dtype]
+    #     warp_fields[k] = v.astype(np_dtype)
+    for k, v in impl_fields.items():
+      wp_dtype = type(v)
+      if hasattr(v, 'dtype'):
+        wp_dtype.dtype
+      if hasattr(wp_dtype, '_wp_scalar_type_'):
+        wp_dtype = wp_dtype._wp_scalar_type_
+      if wp_dtype in wp.types.warp_type_to_np_dtype:
+        np_dtype = wp.types.warp_type_to_np_dtype[wp_dtype]
+        # TODO(btaba): handle array conversions here.
+        impl_fields[k] = np_dtype(v) # .astype(np_dtype)
     # fields passed as array rather than vector to warp need an extra dim.
     warp_fields['gravity'] = warp_fields['gravity'][None]
     warp_fields['wind'] = warp_fields['wind'][None]
@@ -414,7 +434,8 @@ def _put_model_warp(
     field = getattr(mw, k)
     if isinstance(field, wp.types.array):
       field = field.numpy()
-      if len(field.shape) > 1 and field.shape[0] == 1:
+      # TODO(btaba): instead of special casing nxn_geom_pair, check the jax_ndim
+      if len(field.shape) > 1 and field.shape[0] == 1 and k not in ('nxn_geom_pair',):
         # Handle fields that were modified through create_nmodel_batched_array.
         # We let JAX do the batching, hence we pre-flatten these fields.
         field = np.squeeze(field, axis=0)

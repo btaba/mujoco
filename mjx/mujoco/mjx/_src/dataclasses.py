@@ -25,6 +25,39 @@ import numpy as np
 _T = TypeVar('_T')
 
 
+class InAxesNone:
+    """A wrapper for a jax.Array that signals to jax.vmap to broadcast."""
+    def __init__(self, array: jax.Array):
+      if not isinstance(array, jax.Array):
+        raise TypeError(f"NonVmap requires a jax.Array, got {type(array)}")
+      self.array = array
+
+    def __jax_array__(self):
+      """Allows this object to be treated as a JAX array by JAX operations."""
+      return self.array
+
+    def tree_flatten(self):
+      """No children, the array is auxiliary data. This makes it a leaf."""
+      children = ()
+      aux_data = (self.array,)
+      return children, aux_data
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+      return cls(aux_data[0])
+
+    def __repr__(self):
+      return f"InAxesNone({self.array})"
+
+    @property
+    def shape(self):
+        return self.array.shape
+
+    @property
+    def dtype(self):
+        return self.array.dtype
+
+
 def _jax_in_args(typ) -> bool:
   if typ is jax.Array:
     return True
@@ -33,6 +66,9 @@ def _jax_in_args(typ) -> bool:
   if typing.get_origin(typ) in (tuple, list, dict, Union, set):
     return any(_jax_in_args(t) for t in typing.get_args(typ))
   return False
+
+
+assert not _jax_in_args(InAxesNone)
 
 
 def dataclass(clz: _T, register_as_pytree: bool) -> _T:

@@ -7,6 +7,7 @@ from typing import Any, Callable, Tuple
 import jax
 import warp as wp
 from warp.jax_experimental.ffi import jax_callable
+import functools
 
 
 def flatten_tuple_signature(signature: inspect.Signature, args: Tuple):
@@ -107,6 +108,13 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
 
   expected_ndim = annotation.ndim
 
+  # shape_flat = functools.reduce(lambda a, b: a * b, arg.shape)
+  # if shape_flat == 0:
+  #   if verbose:
+  #     print(f"Skipping empty array {name}: {arg.shape}")
+  #   arg = arg.reshape(())
+  #   return arg
+
   # Remove the expanded_dim if we are exceeding the expected ndim.
   # i.e. Unbatched model fields will get an extra dim due to
   # vmap_method="expand_dims".
@@ -132,7 +140,8 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
   # Squash nested vmap batch axes.
   if arg.ndim > expected_ndim:
     extra_ndim = arg.ndim - expected_ndim
-    new_arg = arg.reshape((-1,) + arg.shape[extra_ndim + 1 :])
+    # avoid -1 reshape if the size is 0
+    new_arg = arg.reshape((functools.reduce(lambda a, b: a * b, arg.shape[:extra_ndim + 1]),) + arg.shape[extra_ndim + 1 :])
     new_arg.ndim = expected_ndim
     if verbose:
       print(f"Squashing extra dim: {name} {arg.shape} => {new_arg.shape}")
@@ -179,6 +188,7 @@ def format_args_for_warp(
   new_args = []
   annotations = kernel.__annotations__
   for i in range(len(args)):
+    print(names[i])
     new_args.append(
         _format_arg(args[i], names[i], annotations[names[i]], verbose)
     )

@@ -12,17 +12,18 @@ _d = mjwarp.Data(
     **{f.name: None for f in dataclasses.fields(mjwarp.Data) if f.init}
 )
 _o = mjwarp.Option(
-   **{f.name: None for f in dataclasses.fields(mjwarp.Option) if f.init}
+    **{f.name: None for f in dataclasses.fields(mjwarp.Option) if f.init}
 )
 _s = mjwarp.Statistic(
-   **{f.name: None for f in dataclasses.fields(mjwarp.Statistic) if f.init}
+    **{f.name: None for f in dataclasses.fields(mjwarp.Statistic) if f.init}
 )
 _c = mjwarp.Contact(
-   **{f.name: None for f in dataclasses.fields(mjwarp.Contact) if f.init}
+    **{f.name: None for f in dataclasses.fields(mjwarp.Contact) if f.init}
 )
 _e = mjwarp.Constraint(
-   **{f.name: None for f in dataclasses.fields(mjwarp.Constraint) if f.init}
+    **{f.name: None for f in dataclasses.fields(mjwarp.Constraint) if f.init}
 )
+
 
 def _forward(
     # Model
@@ -360,6 +361,10 @@ def _forward(
     wrap_xpos: wp.array2d(dtype=wp.spatial_vector),
     sensordata: wp.array2d(dtype=float),
 ):
+  _m.stat = _s
+  _m.opt = _o
+  _d.efc = _e
+  _d.contact = _c
   _m.M_rowadr = M_rowadr
   _m.M_rownnz = M_rownnz
   _m.actuator_actadr = actuator_actadr
@@ -375,8 +380,8 @@ def _forward(
   _m.actuator_gainprm = actuator_gainprm
   _m.actuator_gaintype = actuator_gaintype
   _m.actuator_gear = actuator_gear
-  _m.actuator_moment_tiles_nu = [mjwarp_types.TileSet(**a.__dict__) for a in actuator_moment_tiles_nu]
-  _m.actuator_moment_tiles_nv = [mjwarp_types.TileSet(**a.__dict__) for a in actuator_moment_tiles_nv]
+  _m.actuator_moment_tiles_nu = actuator_moment_tiles_nu
+  _m.actuator_moment_tiles_nv = actuator_moment_tiles_nv
   _m.actuator_trnid = actuator_trnid
   _m.actuator_trntype = actuator_trntype
   _m.body_dofadr = body_dofadr
@@ -479,7 +484,6 @@ def _forward(
   _m.nv = nv
   _m.nxn_geom_pair = nxn_geom_pair
   _m.nxn_pairid = nxn_pairid
-  _m.opt = _o
   _m.opt.cone = opt__cone
   _m.opt.density = opt__density
   _m.opt.disableflags = opt__disableflags
@@ -501,7 +505,7 @@ def _forward(
   _m.qM_madr_ij = qM_madr_ij
   _m.qM_mulm_i = qM_mulm_i
   _m.qM_mulm_j = qM_mulm_j
-  _m.qM_tiles = [mjwarp_types.TileSet(**a.__dict__) for a in qM_tiles]
+  _m.qM_tiles = qM_tiles
   _m.qpos0 = qpos0
   _m.qpos_spring = qpos_spring
   _m.sensor_acc_adr = sensor_acc_adr
@@ -520,7 +524,6 @@ def _forward(
   _m.site_bodyid = site_bodyid
   _m.site_pos = site_pos
   _m.site_quat = site_quat
-  _m.stat = _s
   _m.stat.meaninertia = stat__meaninertia
   _m.subtree_mass = subtree_mass
   _m.ten_wrapadr_site = ten_wrapadr_site
@@ -559,7 +562,6 @@ def _forward(
   _d.collision_pair = collision_pair
   _d.collision_pairid = collision_pairid
   _d.collision_worldid = collision_worldid
-  _d.contact = _c
   _d.contact.dim = contact__dim
   _d.contact.dist = contact__dist
   _d.contact.efc_address = contact__efc_address
@@ -575,7 +577,6 @@ def _forward(
   _d.crb = crb
   _d.ctrl = ctrl
   _d.cvel = cvel
-  _d.efc = _e
   _d.efc.D = efc__D
   _d.efc.J = efc__J
   _d.efc.Jaref = efc__Jaref
@@ -2052,15 +2053,15 @@ def forward(m: types.Model, d: types.Data):
       d._impl.sap_segment_index,
   )
   d = d.tree_replace({
-    #   "_impl.ne": out[0],
-    #   "_impl.ne_connect": out[1],
-    #   "_impl.ne_weld": out[2],
-    #   "_impl.ne_jnt": out[3],
-    #   "_impl.ne_ten": out[4],
-    #   "_impl.nf": out[5],
-    #   "_impl.nl": out[6],
-    #   "_impl.nefc": out[7],
-    #   "_impl.fluid_applied": out[8],
+      "_impl.ne": out[0],
+      "_impl.ne_connect": out[1],
+      "_impl.ne_weld": out[2],
+      "_impl.ne_jnt": out[3],
+      "_impl.ne_ten": out[4],
+      "_impl.nf": out[5],
+      "_impl.nl": out[6],
+      "_impl.nefc": out[7],
+      "_impl.fluid_applied": out[8],
       "qacc": out[9],
       "act_dot": out[10],
       "xpos": out[11],
@@ -2076,101 +2077,101 @@ def forward(m: types.Model, d: types.Data):
       "site_xmat": out[21],
       "cam_xpos": out[22],
       "cam_xmat": out[23],
-    #   "_impl.light_xpos": out[24],
-    #   "_impl.light_xdir": out[25],
+      "_impl.light_xpos": out[24],
+      "_impl.light_xdir": out[25],
       "subtree_com": out[26],
-    #   "_impl.cdof": out[27],
-    #   "_impl.cinert": out[28],
-    #   "_impl.actuator_length": out[29],
-    #   "_impl.actuator_moment": out[30],
-    #   "_impl.crb": out[31],
-    #   "_impl.qM": out[32],
-    #   "_impl.ten_velocity": out[33],
-    #   "_impl.actuator_velocity": out[34],
+      "_impl.cdof": out[27],
+      "_impl.cinert": out[28],
+      "_impl.actuator_length": out[29],
+      "_impl.actuator_moment": out[30],
+      "_impl.crb": out[31],
+      "_impl.qM": out[32],
+      "_impl.ten_velocity": out[33],
+      "_impl.actuator_velocity": out[34],
       "cvel": out[35],
-    #   "_impl.cdof_dot": out[36],
+      "_impl.cdof_dot": out[36],
       "qfrc_bias": out[37],
-    #   "_impl.qfrc_spring": out[38],
-    #   "_impl.qfrc_damper": out[39],
+      "_impl.qfrc_spring": out[38],
+      "_impl.qfrc_damper": out[39],
       "qfrc_gravcomp": out[40],
       "qfrc_passive": out[41],
-    #   "_impl.subtree_linvel": out[42],
-    #   "_impl.subtree_angmom": out[43],
-    #   "_impl.subtree_bodyvel": out[44],
+      "_impl.subtree_linvel": out[42],
+      "_impl.subtree_angmom": out[43],
+      "_impl.subtree_bodyvel": out[44],
       "actuator_force": out[45],
       "qfrc_actuator": out[46],
       "qfrc_smooth": out[47],
       "qfrc_constraint": out[48],
-    #   "_impl.contact__efc_address": out[49],
-    #   "_impl.efc__worldid": out[50],
-    #   "_impl.efc__id": out[51],
-    #   "_impl.efc__J": out[52],
-    #   "_impl.efc__pos": out[53],
-    #   "_impl.efc__margin": out[54],
-    #   "_impl.efc__D": out[55],
-    #   "_impl.efc__aref": out[56],
-    #   "_impl.efc__frictionloss": out[57],
-    #   "_impl.efc__force": out[58],
-    #   "_impl.efc__Jaref": out[59],
-    #   "_impl.efc__Ma": out[60],
-    #   "_impl.efc__grad": out[61],
-    #   "_impl.efc__grad_dot": out[62],
-    #   "_impl.efc__Mgrad": out[63],
-    #   "_impl.efc__search": out[64],
-    #   "_impl.efc__search_dot": out[65],
-    #   "_impl.efc__gauss": out[66],
-    #   "_impl.efc__cost": out[67],
-    #   "_impl.efc__prev_cost": out[68],
-    #   "_impl.efc__solver_niter": out[69],
-    #   "_impl.efc__active": out[70],
-    #   "_impl.efc__gtol": out[71],
-    #   "_impl.efc__jv": out[72],
-    #   "_impl.efc__quad": out[73],
-    #   "_impl.efc__quad_gauss": out[74],
-    #   "_impl.efc__h": out[75],
-    #   "_impl.efc__alpha": out[76],
-    #   "_impl.efc__prev_grad": out[77],
-    #   "_impl.efc__prev_Mgrad": out[78],
-    #   "_impl.efc__beta": out[79],
-    #   "_impl.efc__beta_num": out[80],
-    #   "_impl.efc__beta_den": out[81],
-    #   "_impl.efc__done": out[82],
-    #   "_impl.efc__ls_done": out[83],
-    #   "_impl.efc__p0": out[84],
-    #   "_impl.efc__lo": out[85],
-    #   "_impl.efc__lo_alpha": out[86],
-    #   "_impl.efc__hi": out[87],
-    #   "_impl.efc__hi_alpha": out[88],
-    #   "_impl.efc__lo_next": out[89],
-    #   "_impl.efc__lo_next_alpha": out[90],
-    #   "_impl.efc__hi_next": out[91],
-    #   "_impl.efc__hi_next_alpha": out[92],
-    #   "_impl.efc__mid": out[93],
-    #   "_impl.efc__mid_alpha": out[94],
-    #   "_impl.efc__cost_candidate": out[95],
-    #   "_impl.efc__quad_total_candidate": out[96],
-    #   "_impl.efc__u": out[97],
-    #   "_impl.efc__uu": out[98],
-    #   "_impl.efc__uv": out[99],
-    #   "_impl.efc__vv": out[100],
-    #   "_impl.efc__condim": out[101],
-    #   "_impl.sap_projection_lower": out[102],
-    #   "_impl.sap_projection_upper": out[103],
-    #   "_impl.sap_sort_index": out[104],
-    #   "_impl.sap_range": out[105],
-    #   "_impl.collision_pair": out[106],
-    #   "_impl.collision_pairid": out[107],
-    #   "_impl.collision_worldid": out[108],
-    #   "_impl.ncollision": out[109],
-    #   "_impl.cacc": out[110],
-    #   "_impl.cfrc_int": out[111],
-    #   "_impl.cfrc_ext": out[112],
-    #   "_impl.ten_length": out[113],
-    #   "_impl.ten_J": out[114],
-    #   "_impl.ten_wrapadr": out[115],
-    #   "_impl.ten_wrapnum": out[116],
-    #   "_impl.wrap_obj": out[117],
-    #   "_impl.wrap_xpos": out[118],
+      "_impl.contact__efc_address": out[49],
+      "_impl.efc__worldid": out[50],
+      "_impl.efc__id": out[51],
+      "_impl.efc__J": out[52],
+      "_impl.efc__pos": out[53],
+      "_impl.efc__margin": out[54],
+      "_impl.efc__D": out[55],
+      "_impl.efc__aref": out[56],
+      "_impl.efc__frictionloss": out[57],
+      "_impl.efc__force": out[58],
+      "_impl.efc__Jaref": out[59],
+      "_impl.efc__Ma": out[60],
+      "_impl.efc__grad": out[61],
+      "_impl.efc__grad_dot": out[62],
+      "_impl.efc__Mgrad": out[63],
+      "_impl.efc__search": out[64],
+      "_impl.efc__search_dot": out[65],
+      "_impl.efc__gauss": out[66],
+      "_impl.efc__cost": out[67],
+      "_impl.efc__prev_cost": out[68],
+      "_impl.efc__solver_niter": out[69],
+      "_impl.efc__active": out[70],
+      "_impl.efc__gtol": out[71],
+      "_impl.efc__jv": out[72],
+      "_impl.efc__quad": out[73],
+      "_impl.efc__quad_gauss": out[74],
+      "_impl.efc__h": out[75],
+      "_impl.efc__alpha": out[76],
+      "_impl.efc__prev_grad": out[77],
+      "_impl.efc__prev_Mgrad": out[78],
+      "_impl.efc__beta": out[79],
+      "_impl.efc__beta_num": out[80],
+      "_impl.efc__beta_den": out[81],
+      "_impl.efc__done": out[82],
+      "_impl.efc__ls_done": out[83],
+      "_impl.efc__p0": out[84],
+      "_impl.efc__lo": out[85],
+      "_impl.efc__lo_alpha": out[86],
+      "_impl.efc__hi": out[87],
+      "_impl.efc__hi_alpha": out[88],
+      "_impl.efc__lo_next": out[89],
+      "_impl.efc__lo_next_alpha": out[90],
+      "_impl.efc__hi_next": out[91],
+      "_impl.efc__hi_next_alpha": out[92],
+      "_impl.efc__mid": out[93],
+      "_impl.efc__mid_alpha": out[94],
+      "_impl.efc__cost_candidate": out[95],
+      "_impl.efc__quad_total_candidate": out[96],
+      "_impl.efc__u": out[97],
+      "_impl.efc__uu": out[98],
+      "_impl.efc__uv": out[99],
+      "_impl.efc__vv": out[100],
+      "_impl.efc__condim": out[101],
+      "_impl.sap_projection_lower": out[102],
+      "_impl.sap_projection_upper": out[103],
+      "_impl.sap_sort_index": out[104],
+      "_impl.sap_range": out[105],
+      "_impl.collision_pair": out[106],
+      "_impl.collision_pairid": out[107],
+      "_impl.collision_worldid": out[108],
+      "_impl.ncollision": out[109],
+      "_impl.cacc": out[110],
+      "_impl.cfrc_int": out[111],
+      "_impl.cfrc_ext": out[112],
+      "_impl.ten_length": out[113],
+      "_impl.ten_J": out[114],
+      "_impl.ten_wrapadr": out[115],
+      "_impl.ten_wrapnum": out[116],
+      "_impl.wrap_obj": out[117],
+      "_impl.wrap_xpos": out[118],
       "sensordata": out[119],
   })
   return d
