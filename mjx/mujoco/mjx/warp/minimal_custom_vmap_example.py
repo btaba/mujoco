@@ -110,11 +110,11 @@ if __name__ == '__main__':
   rng = jax.random.PRNGKey(0)
   env = Env(m)
 
-  # # Vanilla call.
-  # state = jax.jit(env.reset)(rng)
-  # state = jax.jit(env.step)(state)
-  # assert state.ncon[0] == 2
-  # assert state.nefc[0] == -2
+  # Vanilla call.
+  state = jax.jit(env.reset)(rng)
+  state = jax.jit(env.step)(state)
+  assert state.ncon[0] == 2
+  assert state.nefc[0] == -2
 
   # Vmapped on data.
   batch_size = 8
@@ -122,16 +122,3 @@ if __name__ == '__main__':
   state = jax.jit(jax.vmap(env.reset))(rng)
   with jax.checking_leaks():
     state = jax.jit(jax.vmap(env.step))(state)
-
-  # # # Vmapped on data with in_axes.
-  # # in_axes = jax.tree_map(lambda x: 0, dx)
-  # # in_axes = in_axes.replace(xquat=None)
-  # # dx_batch = dx_batch.replace(xquat=-100 * dx.xquat)
-  # # out = jax.jit(jax.vmap(dummy_jax, in_axes=[None, in_axes]))(mx, dx_batch)
-
-  # # # Nested vmap.
-  # # dx_batch = jax.vmap(make_data)(rng)
-  # # dx_batch2 = jax.tree_map(lambda x: x.reshape((2, 4) + x.shape[1:]), dx_batch)
-  # # out = jax.jit(jax.vmap(jax.vmap(dummy_jax, in_axes=[None, 0]), in_axes=[None, 0]))(mx, dx_batch2)
-
-
