@@ -430,10 +430,16 @@ def _put_model_warp(
       fields[k] = v.astype(np_dtype)
 
   warp_impl = {}
+  np_array_cache = set()
   for k in warp_impl_keys:
     field = getattr(mw, k)
     if isinstance(field, wp.types.array):
       field = field.numpy()
+      np_cache_key = hash(field.tobytes())
+      if np_cache_key in np_array_cache:
+        print(f'field {k} has dupe cache value.')
+      if field.size:
+        np_array_cache.add(np_cache_key)
       # TODO(btaba): instead of special casing nxn_geom_pair, check the jax_ndim
       if len(field.shape) > 1 and field.shape[0] == 1 and k not in ('nxn_geom_pair',):
         # Handle fields that were modified through create_nmodel_batched_array.
@@ -820,10 +826,14 @@ def _make_data_warp(
   )
 
   warp_impl = {}
+  np_cache = dict()
   for _, k in enumerate(sorted(warp_impl_keys)):
     field = _get_nested_attr(dw, k, split='__')
     if isinstance(field, wp.types.array):
       field = field.numpy()  # deferring device_put avoids segfaults
+      np_cache_key = hash(field.tobytes())
+      if np_cache_key in np_cache and field.size:
+        print(f'{k} duplicate numpy hash with {np_cache[np_cache_key]}.')
       if len(field.shape) > 1 and field.shape[0] == 1:
         # Handle fields that were modified through create_nmodel_batched_array.
         # We let JAX do the batching, hence we pre-flatten these fields.
