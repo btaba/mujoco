@@ -6,6 +6,7 @@ import jax
 from jax import tree_util
 from mujoco.mjx._src import dataclasses as mjx_dataclasses
 import numpy as np
+from jax._src.interpreters.batching import register_vmappable
 
 PyTreeNode = mjx_dataclasses.PyTreeNode
 
@@ -262,3 +263,62 @@ class DataWarp(PyTreeNode):
   ten_wrapnum: jax.Array
   wrap_obj: jax.Array
   wrap_xpos: jax.Array
+  shape = property(lambda self: self.actuator_length.shape)
+
+
+_DATA_NON_VMAPPABLES = {
+    'ncon',
+    'ncollision',
+    'efc__worldid',
+    'efc__id',
+    'efc__J',
+    'efc__pos',
+    'efc__margin',
+    'efc__D',
+    'efc__aref',
+    'efc__frictionloss',
+    'efc__force',
+    'efc__Jaref',
+    'efc__active',
+    'efc__jv',
+    'efc__quad',
+    'efc__u',
+    'efc__uu',
+    'efc__uv',
+    'efc__vv',
+    'efc__condim',
+    'contact__dim',
+    'contact__dist',
+    'contact__efc_address',
+    'contact__frame',
+    'contact__friction',
+    'contact__geom',
+    'contact__includemargin',
+    'contact__pos',
+    'contact__solimp',
+    'contact__solref',
+    'contact__solreffriction',
+    'contact__worldid',
+    'collision_pair',
+    'collision_pairid',
+    'collision_worldid',
+    'ne',
+    'ne_connect',
+    'ne_jnt',
+    'ne_ten',
+    'ne_weld',
+    'nefc',
+    'nf',
+    'nl',
+}
+def to_elt(cont, _, d, axis):
+  return DataWarp(**{f.name: cont(getattr(d, f.name), axis)
+                     if f.name not in _DATA_NON_VMAPPABLES
+                     else getattr(d, f.name) for f in DataWarp.fields()})
+  # return DataWarp(cont(d.qpos, axis), d.ncon, d.nefc)
+def from_elt(cont, axis_size, d, axis_dest):
+  # return DataWarp(cont(axis_size, d.qpos, axis_dest), d.ncon, d.nefc)
+  return DataWarp(**{f.name: cont(axis_size, getattr(d, f.name), axis_dest)
+                     if f.name not in _DATA_NON_VMAPPABLES
+                     else getattr(d, f.name) for f in DataWarp.fields()})
+register_vmappable(DataWarp, int, int, to_elt, from_elt, None)
