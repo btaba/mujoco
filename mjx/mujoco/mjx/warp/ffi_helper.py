@@ -2,7 +2,7 @@
 
 import inspect
 import typing
-from typing import Any, Callable, Tuple
+from typing import Any, Callable, Sequence, Tuple
 
 import jax
 import warp as wp
@@ -68,12 +68,18 @@ def jax_callable_variadic_tuple(
     **callable_kwargs,
 ):
   """Wraps a JAX callable to flatten/unflatten variadic tuples."""
+  
   def callable_wrapper(*args, **kwargs):
     def func_wrapper(*flat_args, **kwargs):
-      flat_inputs = flat_args[:-num_outputs]
-      outputs = flat_args[-num_outputs:]
-      unflat_inputs = jax.tree.unflatten(in_tree, flat_inputs)
-      return func(*unflat_inputs + outputs, **kwargs)
+      # num_inputs = len(flat_args) - num_outputs + len(in_out_argnames)
+      # flat_inputs = flat_args[: num_inputs]
+      # TODO(btaba): fix this...
+      # self.output_args = [a for a in self.args if a.in_out] + self.args[self.num_inputs :]
+      # outputs = flat_args[num_inputs:]
+      # unflat_inputs = jax.tree.unflatten(in_tree, flat_inputs)
+      # return func(*unflat_inputs + outputs, **kwargs)
+      unflat_args = jax.tree.unflatten(in_tree, flat_args)
+      return func(*unflat_args, **kwargs)
 
     # Provide a flattened signature for the Warp callable machinery.
     func_wrapper.__signature__ = flatten_tuple_signature(

@@ -81,7 +81,7 @@ def make_data(m):
 
 def _callable_impl(d: Data) -> Data:
   output_dims = {'qpos': d.qpos.shape, 'ncon': (1,), 'nefc': (1,)}
-  jf = ffi.jax_callable(_shim, num_outputs=3, vmap_method='expand_dims',
+  jf = ffi.jax_callable(_shim, num_outputs=3, vmap_method=None,
                         output_dims=output_dims, in_out_argnames={'qpos', 'ncon', 'nefc'})
   qpos, ncon, nefc = jf(d.qpos, d.ncon, d.nefc)
   return d.replace(qpos=d.qpos, ncon=ncon, nefc=nefc)  

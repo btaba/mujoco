@@ -1,10 +1,13 @@
 import dataclasses
 from mujoco.mjx._src import types
 from mujoco.mjx.warp import ffi_helper
+from mujoco.mjx.warp import types as mjx_warp_types
 import mujoco_warp as mjwarp
-from mujoco_warp._src import types as mjwarp_types
 import warp as wp
 import jax
+from typing import Any, Optional
+from jax import numpy as jp
+import numpy as np
 
 _m = mjwarp.Model(
     **{f.name: None for f in dataclasses.fields(mjwarp.Model) if f.init}
@@ -190,50 +193,50 @@ def _kinematics_shim(
       site_xpos,
       site_xmat,
   )
-  names = (
-      "ngeom",
-      "nsite",
-      "nmocap",
-      "qpos0",
-      "body_tree",
-      "body_parentid",
-      "body_jntnum",
-      "body_jntadr",
-      "body_pos",
-      "body_quat",
-      "body_ipos",
-      "body_iquat",
-      "jnt_type",
-      "jnt_qposadr",
-      "jnt_pos",
-      "jnt_axis",
-      "geom_bodyid",
-      "geom_pos",
-      "geom_quat",
-      "site_bodyid",
-      "site_pos",
-      "site_quat",
-      "mocap_bodyid",
-      "qpos",
-      "mocap_pos",
-      "mocap_quat",
-      "xpos",
-      "xquat",
-      "xmat",
-      "xipos",
-      "ximat",
-      "xanchor",
-      "xaxis",
-      "geom_xpos",
-      "geom_xmat",
-      "site_xpos",
-      "site_xmat",
-  )
-  args = ffi_helper.format_args_for_warp(*args, names=names, kernel=_kinematics)
+#   names = (
+#       "ngeom",
+#       "nsite",
+#       "nmocap",
+#       "qpos0",
+#       "body_tree",
+#       "body_parentid",
+#       "body_jntnum",
+#       "body_jntadr",
+#       "body_pos",
+#       "body_quat",
+#       "body_ipos",
+#       "body_iquat",
+#       "jnt_type",
+#       "jnt_qposadr",
+#       "jnt_pos",
+#       "jnt_axis",
+#       "geom_bodyid",
+#       "geom_pos",
+#       "geom_quat",
+#       "site_bodyid",
+#       "site_pos",
+#       "site_quat",
+#       "mocap_bodyid",
+#       "qpos",
+#       "mocap_pos",
+#       "mocap_quat",
+#       "xpos",
+#       "xquat",
+#       "xmat",
+#       "xipos",
+#       "ximat",
+#       "xanchor",
+#       "xaxis",
+#       "geom_xpos",
+#       "geom_xmat",
+#       "site_xpos",
+#       "site_xmat",
+#   )
+  # args = ffi_helper.format_args_for_warp(*args, names=names, kernel=_kinematics)
+  # TODO(btaba): add stride 0 to arrays of first dim 1 since we effectively implement expand_dims below
   _kinematics(*args)
 
 def _kinematics_callable_impl(m: types.Model, d: types.Data):
-  # some field marshalling needs to happen here to get the right output_dims
   output_dims = {
       "xpos": d.xpos.shape,
       "xquat": d.xquat.shape,
@@ -252,10 +255,12 @@ def _kinematics_callable_impl(m: types.Model, d: types.Data):
       _kinematics_shim,
       num_outputs=11,
       output_dims=output_dims,
-      vmap_method="expand_dims",
+      vmap_method=None,  # all the vmap logic is handled in the custom vmap impl below
       graph_compatible=True,
+      in_out_argnames={'xpos', 'xquat', 'xmat', 'xipos', 'ximat', 'xanchor', 'xaxis',
+                       'geom_xpos', 'geom_xmat', 'site_xpos', 'site_xmat'},
   )
-  args = (
+  out = jf(
       m.ngeom,
       m.nsite,
       m.nmocap,
@@ -282,8 +287,18 @@ def _kinematics_callable_impl(m: types.Model, d: types.Data):
       d.qpos,
       d.mocap_pos,
       d.mocap_quat,
+      d.xpos,
+      d.xquat,
+      d.xmat,
+      d.xipos,
+      d.ximat,
+      d.xanchor,
+      d.xaxis,
+      d.geom_xpos,
+      d.geom_xmat,
+      d.site_xpos,
+      d.site_xmat,
   )
-  out = jf(*_marshall_jax(args, ))
   d = d.tree_replace({
       "xpos": out[0],
       "xquat": out[1],
@@ -300,15 +315,50 @@ def _kinematics_callable_impl(m: types.Model, d: types.Data):
   return d
 
 
-def _marshall_jax(args, annotations):
+def _get_ndim_from_tree_path(path, ndim_map) -> Optional[int]:
+  if isinstance(path, tuple):
+    assert all(isinstance(p, jax.tree_util.GetAttrKey) for p in path)
+    attr = '__'.join(p.name for p in path)
+    return ndim_map.get(attr)
+  raise NotImplementedError(f'Parsing for jax tree path {path} not implemented.')
+
+
+def _expand_dim(path: jax.tree_util.KeyPath, leaf: Any, ndim_map: dict[str, tuple[int, Any]]):
+  ndim = _get_ndim_from_tree_path(path, ndim_map)
+  if ndim is None:
+    return leaf
+  if ndim > leaf.ndim:
+    return jp.expand_dims(leaf, axis=np.arange(ndim - leaf.ndim))
+  if ndim < leaf.ndim:
+    raise AssertionError(f'Leaf node ndim ({leaf.ndim}) must not have ndim greater than expected ndim: ({ndim}), for path {path}.')
+  return leaf
+
+
+def _reduce_dim(leaf_expanded: Any, leaf: Any):
+  if leaf_expanded.ndim < leaf.ndim:
+    raise AssertionError('Expanded leaf ndim {leaf_expaned.ndim} is smaller than original leaf ndim {leaf.ndim}')
+  if leaf_expanded.ndim > leaf.ndim:
+    return jp.squeeze(leaf_expanded, np.arange(leaf_expanded.ndim - leaf.ndim))
+  return leaf_expanded
+
 
 
 @jax.custom_batching.custom_vmap
 def kinematics(m: types.Model, d: types.Data):
-  return _kinematics_callable_impl(m, d)
+  # Expand dims for Warp implicit vmap before calling into the FFI wrapped function.
+  m_expanded = jax.tree.map_with_path(
+    lambda path, x: _expand_dim(path, x, mjx_warp_types.NDIM_TYPE['Model']), m)
+  d_expanded = jax.tree.map_with_path(
+    lambda path, x: _expand_dim(path, x, mjx_warp_types.NDIM_TYPE['Data']), d)
+  d_expanded = _kinematics_callable_impl(m_expanded, d_expanded)
+  d = jax.tree.map(lambda n, o: _reduce_dim(n, o), d_expanded, d)
+  return d
 
 
 @kinematics.def_vmap
 def kinematics_vmap(axis_size, is_batched, m, d):
-  out = _kinematics_callable_impl(m, d)
+  # 1. Flatten batch dims into the first axis.
+  import IPython; IPython.embed(user_ns=dict(globals(), **locals()))
+  out = kinematics(m, d)
+
   return out, is_batched
