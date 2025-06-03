@@ -369,7 +369,8 @@ def _flatten_batch_dim(path: jax.tree_util.KeyPath, leaf: Any, ndim_map: dict[st
     return leaf
   if ndim < leaf.ndim:
     assert leaf.ndim - ndim == 1
-    return jp.reshape(leaf, (-1,) + leaf.shape[leaf.ndim - ndim + 1:])
+    batch_dim = np.prod(leaf.shape[:leaf.ndim - ndim + 1])
+    return jp.reshape(leaf, (batch_dim,) + leaf.shape[leaf.ndim - ndim + 1:])
   return leaf
 
 
