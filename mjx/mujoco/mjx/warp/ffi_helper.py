@@ -113,6 +113,8 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
     return arg
 
   expected_ndim = annotation.ndim
+  if arg.ndim != expected_ndim:
+    raise AssertionError('Arg ndim {arg.ndim} does not matche expected ndim {expected_ndim}.')
 
   # shape_flat = functools.reduce(lambda a, b: a * b, arg.shape)
   # if shape_flat == 0:
@@ -121,42 +123,54 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
   #   arg = arg.reshape(())
   #   return arg
 
-  # Remove the expanded_dim if we are exceeding the expected ndim.
-  # i.e. Unbatched model fields will get an extra dim due to
-  # vmap_method="expand_dims".
-  if arg.ndim > expected_ndim and arg.shape[0] == 1:
-    extra_dim = arg.ndim - expected_ndim
-    assert sum(arg.shape[:extra_dim]) == extra_dim
-    new_arg = arg.reshape(arg.shape[extra_dim:])
-    new_arg.ndim = expected_ndim
-    if verbose:
-      print(f"Removing extra dim: {name} {arg.shape} => {new_arg.shape}")
-    # The annotation has larger ndim but the leading dim is 1.
-    # Let's add a stride of 0 to the first axis.
-    if new_arg.ndim > 1 and new_arg.shape[0] == 1:
-      old_strides = new_arg.strides
-      new_arg.strides = (0,) + new_arg.strides[1:]
-      if verbose:
-        print(
-            f"Leading batch dim of 1, adding stride: {name} {old_strides} =>"
-            f" {new_arg.strides}"
-        )
-    return new_arg
+  # # Remove the expanded_dim if we are exceeding the expected ndim.
+  # # i.e. Unbatched model fields will get an extra dim due to
+  # # vmap_method="expand_dims".
+  # if arg.ndim > expected_ndim and arg.shape[0] == 1:
+  #   extra_dim = arg.ndim - expected_ndim
+  #   assert sum(arg.shape[:extra_dim]) == extra_dim
+  #   new_arg = arg.reshape(arg.shape[extra_dim:])
+  #   new_arg.ndim = expected_ndim
+  #   if verbose:
+  #     print(f"Removing extra dim: {name} {arg.shape} => {new_arg.shape}")
+  #   # The annotation has larger ndim but the leading dim is 1.
+  #   # Let's add a stride of 0 to the first axis.
+  #   if new_arg.ndim > 1 and new_arg.shape[0] == 1:
+  #     old_strides = new_arg.strides
+  #     new_arg.strides = (0,) + new_arg.strides[1:]
+  #     if verbose:
+  #       print(
+  #           f"Leading batch dim of 1, adding stride: {name} {old_strides} =>"
+  #           f" {new_arg.strides}"
+  #       )
+  #   return new_arg
 
-  # Squash nested vmap batch axes.
-  if arg.ndim > expected_ndim:
-    extra_ndim = arg.ndim - expected_ndim
-    # avoid -1 reshape if the size is 0
-    new_arg = arg.reshape((functools.reduce(lambda a, b: a * b, arg.shape[:extra_ndim + 1]),) + arg.shape[extra_ndim + 1 :])
-    new_arg.ndim = expected_ndim
-    if verbose:
-      print(f"Squashing extra dim: {name} {arg.shape} => {new_arg.shape}")
-    return new_arg
+  # # Squash nested vmap batch axes.
+  # if arg.ndim > expected_ndim:
+  #   extra_ndim = arg.ndim - expected_ndim
+  #   # avoid -1 reshape if the size is 0
+  #   new_arg = arg.reshape((functools.reduce(lambda a, b: a * b, arg.shape[:extra_ndim + 1]),) + arg.shape[extra_ndim + 1 :])
+  #   new_arg.ndim = expected_ndim
+  #   if verbose:
+  #     print(f"Squashing extra dim: {name} {arg.shape} => {new_arg.shape}")
+  #   return new_arg
 
-  # Add stride 0 to unbatched inputs that have the correct ndim.
-  # Unbatched inputs get a leading dimension of 1, using
-  # vmap_method="expand_dims". We add a stride of 0 to the leading dim.
-  if expected_ndim == arg.ndim and arg.shape[0] == 1:
+  # # Add stride 0 to unbatched inputs that have the correct ndim.
+  # # Unbatched inputs get a leading dimension of 1, using
+  # # vmap_method="expand_dims". We add a stride of 0 to the leading dim.
+  # if expected_ndim == arg.ndim and arg.shape[0] == 1:
+  #   arg = arg
+  #   old_strides = arg.strides
+  #   arg.strides = (0,) + arg.strides[1:]
+  #   new_arg = arg
+  #   if verbose:
+  #     print(
+  #         f"Leading batch dim of 1, adding stride: {name} {old_strides} =>"
+  #         f" {new_arg.strides}"
+  #     )
+  #   return new_arg
+
+  if arg.shape[0] == 1:
     arg = arg
     old_strides = arg.strides
     arg.strides = (0,) + arg.strides[1:]
@@ -168,19 +182,19 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
       )
     return new_arg
 
-  # Add batch dims if they don't exist. This occurs when the underlying
-  # function expects a batch dim but the outer function was not called
-  # with vmap.
-  # e.g. Model/Data have nworld == 1, but without the leading dim in JAX.
-  if expected_ndim > arg.ndim:
-    extra_dims = expected_ndim - arg.ndim
-    new_arg = arg.reshape((1,) * extra_dims + arg.shape)
-    new_arg.ndim = expected_ndim
-    new_arg.strides = (0,) + new_arg.strides[1:]
-    if verbose:
-      print(f"No leading batch dims {name} {arg.shape} => {new_arg.shape}")
-      print(f"Adding stride: {name} {arg.strides} => {new_arg.strides}")
-    return new_arg
+  # # Add batch dims if they don't exist. This occurs when the underlying
+  # # function expects a batch dim but the outer function was not called
+  # # with vmap.
+  # # e.g. Model/Data have nworld == 1, but without the leading dim in JAX.
+  # if expected_ndim > arg.ndim:
+  #   extra_dims = expected_ndim - arg.ndim
+  #   new_arg = arg.reshape((1,) * extra_dims + arg.shape)
+  #   new_arg.ndim = expected_ndim
+  #   new_arg.strides = (0,) + new_arg.strides[1:]
+  #   if verbose:
+  #     print(f"No leading batch dims {name} {arg.shape} => {new_arg.shape}")
+  #     print(f"Adding stride: {name} {arg.strides} => {new_arg.strides}")
+  #   return new_arg
 
   if verbose:
     print(f"Did nothing: {name}: {arg.shape}")
@@ -194,7 +208,6 @@ def format_args_for_warp(
   new_args = []
   annotations = kernel.__annotations__
   for i in range(len(args)):
-    print(names[i])
     new_args.append(
         _format_arg(args[i], names[i], annotations[names[i]], verbose)
     )

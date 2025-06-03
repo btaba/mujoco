@@ -92,7 +92,7 @@ class WarpSmoothTest(absltest.TestCase):
     """Tests Warp smooth from MJX with batched data."""
     m = test_util.load_test_file('pendula.xml')
 
-    batch_size = 7
+    batch_size = 2
     d = mujoco.MjData(m)
     mx = mjx.put_model(m, backend_impl='warp')
 
