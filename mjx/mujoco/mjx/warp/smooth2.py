@@ -323,7 +323,7 @@ def _get_ndim_from_tree_path(path, ndim_map) -> Optional[int]:
   raise NotImplementedError(f'Parsing for jax tree path {path} not implemented.')
 
 
-def _expand_dim(path: jax.tree_util.KeyPath, leaf: Any, ndim_map: dict[str, tuple[int, Any]]):
+def _expand_dim_from_path(path: jax.tree_util.KeyPath, leaf: Any, ndim_map: dict[str, tuple[int, Any]]):
   ndim = _get_ndim_from_tree_path(path, ndim_map)
   if ndim is None:
     return leaf
@@ -334,7 +334,7 @@ def _expand_dim(path: jax.tree_util.KeyPath, leaf: Any, ndim_map: dict[str, tupl
   return leaf
 
 
-def _reduce_dim(leaf_expanded: Any, leaf: Any):
+def _squeeze_dim(leaf_expanded: Any, leaf: Any) -> Any:
   if leaf_expanded.ndim < leaf.ndim:
     raise AssertionError('Expanded leaf ndim {leaf_expaned.ndim} is smaller than original leaf ndim {leaf.ndim}')
   if leaf_expanded.ndim > leaf.ndim:
@@ -347,18 +347,42 @@ def _reduce_dim(leaf_expanded: Any, leaf: Any):
 def kinematics(m: types.Model, d: types.Data):
   # Expand dims for Warp implicit vmap before calling into the FFI wrapped function.
   m_expanded = jax.tree.map_with_path(
-    lambda path, x: _expand_dim(path, x, mjx_warp_types.NDIM_TYPE['Model']), m)
+    lambda path, x: _expand_dim_from_path(path, x, mjx_warp_types.NDIM_TYPE['Model']), m)
   d_expanded = jax.tree.map_with_path(
-    lambda path, x: _expand_dim(path, x, mjx_warp_types.NDIM_TYPE['Data']), d)
+    lambda path, x: _expand_dim_from_path(path, x, mjx_warp_types.NDIM_TYPE['Data']), d)
   d_expanded = _kinematics_callable_impl(m_expanded, d_expanded)
-  d = jax.tree.map(lambda n, o: _reduce_dim(n, o), d_expanded, d)
+  d = jax.tree.map(lambda n, o: _squeeze_dim(n, o), d_expanded, d)
   return d
+
+
+def _unflatten_batch_dim(leaf_squeezed: Any, leaf: Any) -> Any:
+  if leaf_squeezed.ndim > leaf.ndim:
+    raise AssertionError('Squeezed leaf ndim {leaf_squeezed.ndim} is greater than original leaf ndim {leaf.ndim}')
+  if leaf_squeezed.ndim < leaf.ndim:
+    return leaf_squeezed.reshape(leaf.shape)
+  return leaf_squeezed
+
+
+def _flatten_batch_dim(path: jax.tree_util.KeyPath, leaf: Any, ndim_map: dict[str, tuple[int, Any]]):
+  ndim = _get_ndim_from_tree_path(path, ndim_map)
+  if ndim is None:
+    return leaf
+  if ndim < leaf.ndim:
+    assert leaf.ndim - ndim == 1
+    return jp.reshape(leaf, (-1,) + leaf.shape[leaf.ndim - ndim + 1:])
+  return leaf
+
 
 
 @kinematics.def_vmap
 def kinematics_vmap(axis_size, is_batched, m, d):
-  # 1. Flatten batch dims into the first axis.
-  import IPython; IPython.embed(user_ns=dict(globals(), **locals()))
-  out = kinematics(m, d)
-
-  return out, is_batched
+  # Flatten batch dims into the first axis, as expected by MuJoCo Warp.
+  m_flat = jax.tree.map_with_path(
+    lambda path, x: _flatten_batch_dim(path, x, mjx_warp_types.NDIM_TYPE['Model']), m
+  )
+  d_flat = jax.tree.map_with_path(
+    lambda path, x: _flatten_batch_dim(path, x, mjx_warp_types.NDIM_TYPE['Data']), d
+  )
+  d_flat = kinematics(m_flat, d_flat)
+  d = jax.tree.map(lambda x, y: _unflatten_batch_dim(x, y), d_flat, d)
+  return d, is_batched[1]

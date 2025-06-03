@@ -694,7 +694,7 @@ class Model(PyTreeNode):
   dof_armature: jax.Array
   dof_damping: jax.Array
   dof_invweight0: jax.Array
-  dof_M0: jax.Array  # pylint:disable=invalid-name
+  # dof_M0: jax.Array  # pylint:disable=invalid-name
   geom_type: np.ndarray
   geom_contype: np.ndarray
   geom_conaffinity: np.ndarray
@@ -1051,7 +1051,7 @@ class DataJAX(PyTreeNode):
   actuator_moment: jax.Array
   crb: jax.Array
   qM: jax.Array  # pylint:disable=invalid-name
-  M: jax.Array  # pylint:disable=invalid-name
+  # M: jax.Array  # pylint:disable=invalid-name
   qLD: jax.Array  # pylint:disable=invalid-name
   qLDiagInv: jax.Array  # pylint:disable=invalid-name
   ten_velocity: jax.Array
