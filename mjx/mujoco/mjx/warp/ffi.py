@@ -176,7 +176,7 @@ def _squeeze_dim(leaf_expanded: Any, leaf: Any) -> Any:
   return leaf_expanded
 
 
-def marshal_warp_callable(func):
+def marshal_jax_warp_callable(func):
   """Marshal fields into a MuJoCo Warp function."""
   @functools.wraps(func)
   def wrapper(m, d):

@@ -71,6 +71,8 @@ def _kinematics_shim(
     site_xpos: wp.array2d(dtype=wp.vec3),
     site_xmat: wp.array2d(dtype=wp.mat33),
 ):
+  # TODO(btaba): create _m/_d inside the function scope, or use a mutex?
+  # which is faster?
   _m.stat = _s
   _m.opt = _o
   _d.efc = _e
