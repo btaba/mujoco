@@ -1,6 +1,6 @@
 import dataclasses
 from mujoco.mjx._src import types
-from mujoco.mjx.warp import ffi_helper
+from mujoco.mjx.warp import ffi
 from mujoco.mjx.warp import types as mjx_warp_types
 import mujoco_warp as mjwarp
 import warp as wp
@@ -232,7 +232,7 @@ def _kinematics_shim(
       "site_xpos",
       "site_xmat",
   )
-  args = ffi_helper.format_args_for_warp(*args, names=names, kernel=_kinematics)
+  args = ffi.format_args_for_warp(*args, names=names, kernel=_kinematics)
   # TODO(btaba): add stride 0 to arrays of first dim 1 since we effectively implement expand_dims below
   _kinematics(*args)
 
@@ -251,7 +251,7 @@ def _kinematics_callable_impl(m: types.Model, d: types.Data):
       "site_xmat": d.site_xmat.shape,
   }
 
-  jf = ffi_helper.jax_callable_variadic_tuple(
+  jf = ffi.jax_callable_variadic_tuple(
       _kinematics_shim,
       num_outputs=11,
       output_dims=output_dims,
@@ -315,75 +315,14 @@ def _kinematics_callable_impl(m: types.Model, d: types.Data):
   return d
 
 
-def _get_ndim_from_tree_path(path, ndim_map) -> Optional[int]:
-  if isinstance(path, tuple):
-    assert all(isinstance(p, jax.tree_util.GetAttrKey) for p in path)
-    attr = '__'.join(p.name for p in path)
-    return ndim_map.get(attr)
-  raise NotImplementedError(f'Parsing for jax tree path {path} not implemented.')
-
-
-def _expand_dim_from_path(path: jax.tree_util.KeyPath, leaf: Any, ndim_map: dict[str, tuple[int, Any]]):
-  ndim = _get_ndim_from_tree_path(path, ndim_map)
-  if ndim is None:
-    return leaf
-  if ndim > leaf.ndim:
-    return jp.expand_dims(leaf, axis=np.arange(ndim - leaf.ndim))
-  if ndim < leaf.ndim:
-    raise AssertionError(f'Leaf node ndim ({leaf.ndim}) must not have ndim greater than expected ndim: ({ndim}), for path {path}.')
-  return leaf
-
-
-def _squeeze_dim(leaf_expanded: Any, leaf: Any) -> Any:
-  if leaf_expanded.ndim < leaf.ndim:
-    raise AssertionError('Expanded leaf ndim {leaf_expaned.ndim} is smaller than original leaf ndim {leaf.ndim}')
-  if leaf_expanded.ndim > leaf.ndim:
-    return jp.squeeze(leaf_expanded, np.arange(leaf_expanded.ndim - leaf.ndim))
-  return leaf_expanded
-
-
-
 @jax.custom_batching.custom_vmap
+@ffi.marshal_warp_callable
 def kinematics(m: types.Model, d: types.Data):
-  # Expand dims for Warp implicit vmap before calling into the FFI wrapped function.
-  m_expanded = jax.tree.map_with_path(
-    lambda path, x: _expand_dim_from_path(path, x, mjx_warp_types.NDIM_TYPE['Model']), m)
-  d_expanded = jax.tree.map_with_path(
-    lambda path, x: _expand_dim_from_path(path, x, mjx_warp_types.NDIM_TYPE['Data']), d)
-  d_expanded = _kinematics_callable_impl(m_expanded, d_expanded)
-  d = jax.tree.map(lambda n, o: _squeeze_dim(n, o), d_expanded, d)
-  return d
-
-
-def _unflatten_batch_dim(leaf_squeezed: Any, leaf: Any) -> Any:
-  if leaf_squeezed.ndim > leaf.ndim:
-    raise AssertionError('Squeezed leaf ndim {leaf_squeezed.ndim} is greater than original leaf ndim {leaf.ndim}')
-  if leaf_squeezed.ndim < leaf.ndim:
-    return leaf_squeezed.reshape(leaf.shape)
-  return leaf_squeezed
-
-
-def _flatten_batch_dim(path: jax.tree_util.KeyPath, leaf: Any, ndim_map: dict[str, tuple[int, Any]]):
-  ndim = _get_ndim_from_tree_path(path, ndim_map)
-  if ndim is None:
-    return leaf
-  if ndim < leaf.ndim:
-    assert leaf.ndim - ndim == 1
-    batch_dim = np.prod(leaf.shape[:leaf.ndim - ndim + 1])
-    return jp.reshape(leaf, (batch_dim,) + leaf.shape[leaf.ndim - ndim + 1:])
-  return leaf
-
+  return _kinematics_callable_impl(m, d)
 
 
 @kinematics.def_vmap
-def kinematics_vmap(axis_size, is_batched, m, d):
-  # Flatten batch dims into the first axis, as expected by MuJoCo Warp.
-  m_flat = jax.tree.map_with_path(
-    lambda path, x: _flatten_batch_dim(path, x, mjx_warp_types.NDIM_TYPE['Model']), m
-  )
-  d_flat = jax.tree.map_with_path(
-    lambda path, x: _flatten_batch_dim(path, x, mjx_warp_types.NDIM_TYPE['Data']), d
-  )
-  d_flat = kinematics(m_flat, d_flat)
-  d = jax.tree.map(lambda x, y: _unflatten_batch_dim(x, y), d_flat, d)
+@ffi.marshal_custom_vmap
+def kinematics_vmap(unused_axis_size, is_batched, m, d):
+  d = kinematics(m, d)
   return d, is_batched[1]

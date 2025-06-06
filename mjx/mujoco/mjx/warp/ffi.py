@@ -2,12 +2,15 @@
 
 import inspect
 import typing
-from typing import Any, Callable, Sequence, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import jax
 import warp as wp
 from warp.jax_experimental.ffi import jax_callable
 import functools
+from jax import numpy as jp
+import numpy as np
+from mujoco.mjx.warp import types as mjx_warp_types
 
 
 def flatten_tuple_signature(signature: inspect.Signature, args: Tuple):
@@ -116,60 +119,6 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
   if arg.ndim != expected_ndim:
     raise AssertionError('Arg ndim {arg.ndim} does not matche expected ndim {expected_ndim}.')
 
-  # shape_flat = functools.reduce(lambda a, b: a * b, arg.shape)
-  # if shape_flat == 0:
-  #   if verbose:
-  #     print(f"Skipping empty array {name}: {arg.shape}")
-  #   arg = arg.reshape(())
-  #   return arg
-
-  # # Remove the expanded_dim if we are exceeding the expected ndim.
-  # # i.e. Unbatched model fields will get an extra dim due to
-  # # vmap_method="expand_dims".
-  # if arg.ndim > expected_ndim and arg.shape[0] == 1:
-  #   extra_dim = arg.ndim - expected_ndim
-  #   assert sum(arg.shape[:extra_dim]) == extra_dim
-  #   new_arg = arg.reshape(arg.shape[extra_dim:])
-  #   new_arg.ndim = expected_ndim
-  #   if verbose:
-  #     print(f"Removing extra dim: {name} {arg.shape} => {new_arg.shape}")
-  #   # The annotation has larger ndim but the leading dim is 1.
-  #   # Let's add a stride of 0 to the first axis.
-  #   if new_arg.ndim > 1 and new_arg.shape[0] == 1:
-  #     old_strides = new_arg.strides
-  #     new_arg.strides = (0,) + new_arg.strides[1:]
-  #     if verbose:
-  #       print(
-  #           f"Leading batch dim of 1, adding stride: {name} {old_strides} =>"
-  #           f" {new_arg.strides}"
-  #       )
-  #   return new_arg
-
-  # # Squash nested vmap batch axes.
-  # if arg.ndim > expected_ndim:
-  #   extra_ndim = arg.ndim - expected_ndim
-  #   # avoid -1 reshape if the size is 0
-  #   new_arg = arg.reshape((functools.reduce(lambda a, b: a * b, arg.shape[:extra_ndim + 1]),) + arg.shape[extra_ndim + 1 :])
-  #   new_arg.ndim = expected_ndim
-  #   if verbose:
-  #     print(f"Squashing extra dim: {name} {arg.shape} => {new_arg.shape}")
-  #   return new_arg
-
-  # # Add stride 0 to unbatched inputs that have the correct ndim.
-  # # Unbatched inputs get a leading dimension of 1, using
-  # # vmap_method="expand_dims". We add a stride of 0 to the leading dim.
-  # if expected_ndim == arg.ndim and arg.shape[0] == 1:
-  #   arg = arg
-  #   old_strides = arg.strides
-  #   arg.strides = (0,) + arg.strides[1:]
-  #   new_arg = arg
-  #   if verbose:
-  #     print(
-  #         f"Leading batch dim of 1, adding stride: {name} {old_strides} =>"
-  #         f" {new_arg.strides}"
-  #     )
-  #   return new_arg
-
   if arg.shape[0] == 1:
     arg = arg
     old_strides = arg.strides
@@ -181,20 +130,6 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
           f" {new_arg.strides}"
       )
     return new_arg
-
-  # # Add batch dims if they don't exist. This occurs when the underlying
-  # # function expects a batch dim but the outer function was not called
-  # # with vmap.
-  # # e.g. Model/Data have nworld == 1, but without the leading dim in JAX.
-  # if expected_ndim > arg.ndim:
-  #   extra_dims = expected_ndim - arg.ndim
-  #   new_arg = arg.reshape((1,) * extra_dims + arg.shape)
-  #   new_arg.ndim = expected_ndim
-  #   new_arg.strides = (0,) + new_arg.strides[1:]
-  #   if verbose:
-  #     print(f"No leading batch dims {name} {arg.shape} => {new_arg.shape}")
-  #     print(f"Adding stride: {name} {arg.strides} => {new_arg.strides}")
-  #   return new_arg
 
   if verbose:
     print(f"Did nothing: {name}: {arg.shape}")
@@ -212,3 +147,84 @@ def format_args_for_warp(
         _format_arg(args[i], names[i], annotations[names[i]], verbose)
     )
   return new_args
+
+
+def _get_ndim_from_tree_path(path, ndim_map) -> Optional[int]:
+  if isinstance(path, tuple):
+    assert all(isinstance(p, jax.tree_util.GetAttrKey) for p in path)
+    attr = '__'.join(p.name for p in path)
+    return ndim_map.get(attr)
+  raise NotImplementedError(f'Parsing for jax tree path {path} not implemented.')
+
+
+def _expand_dim_from_path(path: jax.tree_util.KeyPath, leaf: Any, ndim_map: dict[str, tuple[int, Any]]):
+  ndim = _get_ndim_from_tree_path(path, ndim_map)
+  if ndim is None:
+    return leaf
+  if ndim > leaf.ndim:
+    return jp.expand_dims(leaf, axis=np.arange(ndim - leaf.ndim))
+  if ndim < leaf.ndim:
+    raise AssertionError(f'Leaf node ndim ({leaf.ndim}) must not have ndim greater than expected ndim: ({ndim}), for path {path}.')
+  return leaf
+
+
+def _squeeze_dim(leaf_expanded: Any, leaf: Any) -> Any:
+  if leaf_expanded.ndim < leaf.ndim:
+    raise AssertionError('Expanded leaf ndim {leaf_expaned.ndim} is smaller than original leaf ndim {leaf.ndim}')
+  if leaf_expanded.ndim > leaf.ndim:
+    return jp.squeeze(leaf_expanded, np.arange(leaf_expanded.ndim - leaf.ndim))
+  return leaf_expanded
+
+
+def marshal_warp_callable(func):
+  """Marshal fields into a MuJoCo Warp function."""
+  @functools.wraps(func)
+  def wrapper(m, d):
+    # Expand dims for Warp implicit vmap before calling into the FFI wrapped function.
+    m_expanded = jax.tree.map_with_path(
+      lambda path, x: _expand_dim_from_path(path, x, mjx_warp_types.NDIM_TYPE['Model']), m)
+    d_expanded = jax.tree.map_with_path(
+      lambda path, x: _expand_dim_from_path(path, x, mjx_warp_types.NDIM_TYPE['Data']), d)
+    d_expanded_result = func(m_expanded, d_expanded)
+    d_result = jax.tree.map(lambda n, o: _squeeze_dim(n, o), d_expanded_result, d)
+    return d_result
+  return wrapper
+    
+
+def _flatten_batch_dim(path: jax.tree_util.KeyPath, leaf: Any, ndim_map: dict[str, tuple[int, Any]]):
+  ndim = _get_ndim_from_tree_path(path, ndim_map)
+  if ndim is None:
+    return leaf
+  if ndim < leaf.ndim:
+    assert leaf.ndim - ndim == 1
+    batch_dim = np.prod(leaf.shape[:leaf.ndim - ndim + 1])
+    return jp.reshape(leaf, (batch_dim,) + leaf.shape[leaf.ndim - ndim + 1:])
+  return leaf
+
+
+def _unflatten_batch_dim(leaf_squeezed: Any, leaf: Any) -> Any:
+  if leaf_squeezed.ndim > leaf.ndim:
+    raise AssertionError('Squeezed leaf ndim {leaf_squeezed.ndim} is greater than original leaf ndim {leaf.ndim}')
+  if leaf_squeezed.ndim < leaf.ndim:
+    return leaf_squeezed.reshape(leaf.shape)
+  return leaf_squeezed
+
+
+def marshal_custom_vmap(vmap_func):
+  """Marshal fields for a custom vmap into an MuJoCo Warp function."""
+  @functools.wraps(vmap_func)
+  def wrapper(axis_size, is_batched, m, d):
+    # Flatten batch dims into the first axis.
+    m_flat = jax.tree.map_with_path(
+        lambda path, x: _flatten_batch_dim(path, x, mjx_warp_types.NDIM_TYPE['Model']), m
+    )
+    d_flat = jax.tree.map_with_path(
+        lambda path, x: _flatten_batch_dim(path, x, mjx_warp_types.NDIM_TYPE['Data']), d
+    )
+    d_flat_result, out_batched = vmap_func(axis_size, is_batched, m_flat, d_flat)
+    # Unflatten batch dimension.
+    d_result = jax.tree.map(
+        lambda x, y: _unflatten_batch_dim(x, y), d_flat_result, d
+    )
+    return d_result, out_batched
+  return wrapper

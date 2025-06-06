@@ -1,6 +1,6 @@
 import dataclasses
 from mujoco.mjx._src import types
-from mujoco.mjx.warp import ffi_helper
+from mujoco.mjx.warp import ffi
 import mujoco_warp as mjwarp
 from mujoco_warp._src import types as mjwarp_types
 import warp as wp
@@ -1703,7 +1703,7 @@ def _forward_shim(
       "wrap_xpos",
       "sensordata",
   )
-  args = ffi_helper.format_args_for_warp(*args, names=names, kernel=_forward)
+  args = ffi.format_args_for_warp(*args, names=names, kernel=_forward)
   _forward(*args)
 
 
@@ -1831,7 +1831,7 @@ def forward(m: types.Model, d: types.Data):
       "sensordata": d.sensordata.shape,
   }
 
-  jf = ffi_helper.jax_callable_variadic_tuple(
+  jf = ffi.jax_callable_variadic_tuple(
       _forward_shim,
       num_outputs=120,
       output_dims=output_dims,
