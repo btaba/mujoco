@@ -1,14 +1,27 @@
+# Copyright 2025 DeepMind Technologies Limited
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 import dataclasses
+import jax
 from mujoco.mjx._src import types
 from mujoco.mjx.warp import ffi
-from mujoco.mjx.warp import types as mjx_warp_types
 import mujoco_warp as mjwarp
 import warp as wp
-import jax
-from typing import Any, Optional
-from jax import numpy as jp
-import numpy as np
 
+# TODO(btaba): create _m/_d inside the function scope, or use a mutex?
+# which is faster?
 _m = mjwarp.Model(
     **{f.name: None for f in dataclasses.fields(mjwarp.Model) if f.init}
 )
@@ -71,8 +84,6 @@ def _kinematics_shim(
     site_xpos: wp.array2d(dtype=wp.vec3),
     site_xmat: wp.array2d(dtype=wp.mat33),
 ):
-  # TODO(btaba): create _m/_d inside the function scope, or use a mutex?
-  # which is faster?
   _m.stat = _s
   _m.opt = _o
   _d.efc = _e
@@ -118,28 +129,40 @@ def _kinematics_shim(
   mjwarp.kinematics(_m, _d)
 
 
-def _kinematics_callable_impl(m: types.Model, d: types.Data):
+def _kinematics_jax_impl(m: types.Model, d: types.Data):
   output_dims = {
-      "xpos": d.xpos.shape,
-      "xquat": d.xquat.shape,
-      "xmat": d.xmat.shape,
-      "xipos": d.xipos.shape,
-      "ximat": d.ximat.shape,
-      "xanchor": d.xanchor.shape,
-      "xaxis": d.xaxis.shape,
-      "geom_xpos": d.geom_xpos.shape,
-      "geom_xmat": d.geom_xmat.shape,
-      "site_xpos": d.site_xpos.shape,
-      "site_xmat": d.site_xmat.shape,
+      'xpos': d.xpos.shape,
+      'xquat': d.xquat.shape,
+      'xmat': d.xmat.shape,
+      'xipos': d.xipos.shape,
+      'ximat': d.ximat.shape,
+      'xanchor': d.xanchor.shape,
+      'xaxis': d.xaxis.shape,
+      'geom_xpos': d.geom_xpos.shape,
+      'geom_xmat': d.geom_xmat.shape,
+      'site_xpos': d.site_xpos.shape,
+      'site_xmat': d.site_xmat.shape,
   }
+
   jf = ffi.jax_callable_variadic_tuple(
       _kinematics_shim,
       num_outputs=11,
       output_dims=output_dims,
       vmap_method=None,
       graph_compatible=True,
-      in_out_argnames={'xpos', 'xquat', 'xmat', 'xipos', 'ximat', 'xanchor', 'xaxis',
-                       'geom_xpos', 'geom_xmat', 'site_xpos', 'site_xmat'},
+      in_out_argnames={
+          'xpos',
+          'xquat',
+          'xmat',
+          'xipos',
+          'ximat',
+          'xanchor',
+          'xaxis',
+          'geom_xpos',
+          'geom_xmat',
+          'site_xpos',
+          'site_xmat',
+      },
   )
   out = jf(
       m.ngeom,
@@ -181,25 +204,25 @@ def _kinematics_callable_impl(m: types.Model, d: types.Data):
       d.site_xmat,
   )
   d = d.tree_replace({
-      "xpos": out[0],
-      "xquat": out[1],
-      "xmat": out[2],
-      "xipos": out[3],
-      "ximat": out[4],
-      "xanchor": out[5],
-      "xaxis": out[6],
-      "geom_xpos": out[7],
-      "geom_xmat": out[8],
-      "site_xpos": out[9],
-      "site_xmat": out[10],
+      'xpos': out[0],
+      'xquat': out[1],
+      'xmat': out[2],
+      'xipos': out[3],
+      'ximat': out[4],
+      'xanchor': out[5],
+      'xaxis': out[6],
+      'geom_xpos': out[7],
+      'geom_xmat': out[8],
+      'site_xpos': out[9],
+      'site_xmat': out[10],
   })
   return d
 
 
 @jax.custom_batching.custom_vmap
-@ffi.marshal_warp_callable
+@ffi.marshal_jax_warp_callable
 def kinematics(m: types.Model, d: types.Data):
-  return _kinematics_callable_impl(m, d)
+  return _kinematics_jax_impl(m, d)
 
 
 @kinematics.def_vmap
