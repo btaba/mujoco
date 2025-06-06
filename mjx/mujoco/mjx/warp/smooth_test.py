@@ -1,4 +1,4 @@
-# Copyright 2023 DeepMind Technologies Limited
+# Copyright 2025 DeepMind Technologies Limited
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -181,68 +181,6 @@ class WarpSmoothTest(absltest.TestCase):
         _assert_attr_eq(d, dx, 'site_xpos')
         _assert_eq(d.site_xmat.reshape((-1, 3, 3)), dx.site_xmat, 'site_xmat')
 
-#   _SPHERE_SPHERE = """
-#     <mujoco>
-#       <worldbody>
-#         <body>
-#           <joint type="free"/>
-#           <geom pos="0 0 0" size="0.2" type="sphere"/>
-#         </body>
-#         <body >
-#           <joint type="free"/>
-#           <geom pos="0 0.3 0" size="0.11" type="sphere"/>
-#         </body>
-#       </worldbody>
-#     </mujoco>
-#   """
-
-#   @mock.patch.dict(os.environ, {'MJX_WARP_ENABLED': 'true'})
-#   def test_fn(self):
-#     """Tests Warp smooth from MJX with batched data."""
-#     # m = test_util.load_test_file('pendula.xml')
-#     m = mujoco.MjModel.from_xml_string(self._SPHERE_SPHERE)
-#     d = mujoco.MjData(m)
-#     mx = mjx.put_model(m, backend_impl='warp')
-#     # import IPython; IPython.embed(user_ns=dict(globals(), **locals()))
-
-#     def make_data(rng):
-#       dx = mjx.make_data(m, backend_impl='warp')
-#       rng, key = jax.random.split(rng)
-#       qpos = jax.random.uniform(key, (m.nq,))
-#       rng, key1, key2 = jax.random.split(rng, 3)
-#       mocap_pos = jax.random.normal(key1, (m.nmocap, 3))
-#       mocap_quat = jax.random.normal(key2, (m.nmocap, 4))
-#       mocap_quat = math.normalize(mocap_quat)
-#       return dx.replace(qpos=m.qpos0, mocap_pos=mocap_pos,
-#                         mocap_quat=mocap_quat)
-
-#     rng = jax.random.split(jax.random.PRNGKey(0), 8)
-#     dx_batch = jax.vmap(make_data)(rng)
-#     dx_batch = jax.tree.map(lambda x: x.reshape((2, 4) + x.shape[1:]), dx_batch)
-
-#     dx_batch = jax.jit(jax.vmap(jax.vmap(mjx.kinematics, in_axes=(None, 0)), in_axes=(None, 0)))(mx, dx_batch)
-#     out = jax.jit(jax.vmap(jax.vmap(smooth.com_pos, in_axes=(None, 0)), in_axes=(None, 0)))(mx, dx_batch)
-#     # out = jax.jit(jax.vmap(jax.vmap(collision_driver.collision, in_axes=(None, 0)), in_axes=(None, 0)))(mx, dx_batch)
-
-#     for i in range(2):
-#       for j in range(4):
-#         dx = jax.tree.map(lambda x: x[i][j], out)
-
-#         d.qpos[:] = dx.qpos
-#         d.mocap_pos[:] = dx.mocap_pos
-#         d.mocap_quat[:] = dx.mocap_quat
-#         mujoco.mj_forward(m, d)
-
-#         _assert_attr_eq(d, dx, 'subtree_com')
-
-# """
-# import mujoco_warp as mjwarp
-# mw = mjwarp.put_model(m)
-# dw = mjwarp.make_data(m, nworld=8)
-# with wp.ScopedCapture() as capture:
-#   mjwarp.forward(mw, dw)
-# wp.capture_launch(capture.graph)
-# """
 
 if __name__ == '__main__':
   absltest.main()

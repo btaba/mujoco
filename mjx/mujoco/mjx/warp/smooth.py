@@ -13,10 +13,12 @@
 # limitations under the License.
 # ==============================================================================
 
+"""DO NOT EDIT. This file is auto-generated."""
 import dataclasses
 import jax
 from mujoco.mjx._src import types
 from mujoco.mjx.warp import ffi
+from mujoco.mjx.warp import types as mjx_warp_types
 import mujoco_warp as mjwarp
 import warp as wp
 
@@ -45,6 +47,7 @@ _e = mjwarp.Constraint(
 @ffi.format_args_for_warp
 def _kinematics_shim(
     # Model
+    nworld: int,
     ngeom: int,
     nsite: int,
     nmocap: int,
@@ -125,7 +128,7 @@ def _kinematics_shim(
   _d.xmat = xmat
   _d.xpos = xpos
   _d.xquat = xquat
-  _d.nworld = _d.qpos.shape[0]
+  _d.nworld = nworld
   mjwarp.kinematics(_m, _d)
 
 
@@ -165,6 +168,7 @@ def _kinematics_jax_impl(m: types.Model, d: types.Data):
       },
   )
   out = jf(
+      d.qpos.shape[0],
       m.ngeom,
       m.nsite,
       m.nmocap,

@@ -2,11 +2,11 @@
 
 import inspect
 import typing
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Sequence, Tuple
 
 import jax
 import warp as wp
-from warp.jax_experimental.ffi import jax_callable
+from warp.jax_experimental import ffi
 import functools
 from jax import numpy as jp
 import numpy as np
@@ -67,20 +67,14 @@ def flatten_tuple_signature(signature: inspect.Signature, args: Tuple):
 def jax_callable_variadic_tuple(
     func: Callable,  # pylint: disable=g-bare-generic
     num_outputs: int = 1,
-    *callable_args,
-    **callable_kwargs,
+    graph_compatible: bool = True,
+    vmap_method: Optional[str] = None,
+    output_dims: dict[str, tuple[int, ...]]=None,
+    in_out_argnames: Sequence[str]=None,
 ):
   """Wraps a JAX callable to flatten/unflatten variadic tuples."""
-  
   def callable_wrapper(*args, **kwargs):
     def func_wrapper(*flat_args, **kwargs):
-      # num_inputs = len(flat_args) - num_outputs + len(in_out_argnames)
-      # flat_inputs = flat_args[: num_inputs]
-      # TODO(btaba): fix this...
-      # self.output_args = [a for a in self.args if a.in_out] + self.args[self.num_inputs :]
-      # outputs = flat_args[num_inputs:]
-      # unflat_inputs = jax.tree.unflatten(in_tree, flat_inputs)
-      # return func(*unflat_inputs + outputs, **kwargs)
       unflat_args = jax.tree.unflatten(in_tree, flat_args)
       return func(*unflat_args, **kwargs)
 
@@ -88,9 +82,13 @@ def jax_callable_variadic_tuple(
     func_wrapper.__signature__ = flatten_tuple_signature(
         inspect.signature(func), args
     )
-    my_callable = jax_callable(
-        func_wrapper, num_outputs,
-        *callable_args, **callable_kwargs
+    my_callable = ffi.jax_callable(
+        func_wrapper,
+        num_outputs=num_outputs,
+        graph_compatible=graph_compatible,
+        vmap_method=vmap_method,
+        output_dims=output_dims,
+        in_out_argnames=in_out_argnames,
     )
 
     flat_args, in_tree = jax.tree.flatten(args)
@@ -137,7 +135,7 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
   return arg
 
 
-def format_args_for_warp(func, verbose=True):
+def format_args_for_warp(func, verbose=False):
   @functools.wraps(func)
   def wrapper(*args):
     args = list(args)
@@ -152,7 +150,7 @@ def format_args_for_warp(func, verbose=True):
 def _get_ndim_from_tree_path(path, ndim_map) -> Optional[int]:
   if isinstance(path, tuple):
     assert all(isinstance(p, jax.tree_util.GetAttrKey) for p in path)
-    attr = '__'.join(p.name for p in path)
+    attr = '__'.join(p.name for p in path if p.name != '_impl')
     return ndim_map.get(attr)
   raise NotImplementedError(f'Parsing for jax tree path {path} not implemented.')
 

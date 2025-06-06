@@ -326,6 +326,7 @@ _DATA_NON_VMAP = {
     'efc__aref',
     'efc__uv',
     'efc__worldid',
+    'nconmax',
 }
 
 

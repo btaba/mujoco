@@ -1,10 +1,29 @@
+# Copyright 2025 DeepMind Technologies Limited
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+"""DO NOT EDIT. This file is auto-generated."""
 import dataclasses
+import jax
 from mujoco.mjx._src import types
-from mujoco.mjx.warp import ffi_helper
+from mujoco.mjx.warp import ffi
 import mujoco_warp as mjwarp
 from mujoco_warp._src import types as mjwarp_types
 import warp as wp
 
+# TODO(btaba): create _m/_d inside the function scope, or use a mutex?
+# which is faster?
 _m = mjwarp.Model(
     **{f.name: None for f in dataclasses.fields(mjwarp.Model) if f.init}
 )
@@ -25,8 +44,10 @@ _e = mjwarp.Constraint(
 )
 
 
-def _collision(
+@ffi.format_args_for_warp
+def _collision_shim(
     # Model
+    nworld: int,
     ngeom: int,
     opt__disableflags: int,
     opt__gjk_iterations: int,
@@ -59,12 +80,11 @@ def _collision(
     pair_friction: wp.array2d(dtype=mjwarp_types.vec5),
     # Data
     nconmax: int,
-    ncon: wp.array(dtype=int),
     geom_xpos: wp.array2d(dtype=wp.vec3),
     geom_xmat: wp.array2d(dtype=wp.mat33),
     sap_cumulative_sum: wp.array(dtype=int),
     sap_segment_index: wp.array(dtype=int),
-    ncollision: wp.array(dtype=int),
+    ncon: wp.array(dtype=int),
     contact__dist: wp.array(dtype=float),
     contact__pos: wp.array(dtype=wp.vec3),
     contact__frame: wp.array(dtype=wp.mat33),
@@ -83,6 +103,7 @@ def _collision(
     collision_pair: wp.array(dtype=wp.vec2i),
     collision_pairid: wp.array(dtype=int),
     collision_worldid: wp.array(dtype=int),
+    ncollision: wp.array(dtype=int),
 ):
   _m.stat = _s
   _m.opt = _o
@@ -143,215 +164,65 @@ def _collision(
   _d.sap_range = sap_range
   _d.sap_segment_index = sap_segment_index
   _d.sap_sort_index = sap_sort_index
-  _d.nworld = _d.qpos.shape[0]
+  _d.nworld = nworld
   mjwarp.collision(_m, _d)
 
 
-def _collision_shim(
-    ngeom: int,
-    opt__disableflags: int,
-    opt__gjk_iterations: int,
-    opt__epa_iterations: int,
-    opt__epa_exact_neg_distance: bool,
-    opt__depth_extension: float,
-    geom_type: wp.array(dtype=int),
-    geom_condim: wp.array(dtype=int),
-    geom_dataid: wp.array(dtype=int),
-    geom_priority: wp.array(dtype=int),
-    geom_solmix: wp.array(dtype=float),
-    geom_solref: wp.array(dtype=wp.vec2),
-    geom_solimp: wp.array(dtype=mjwarp_types.vec5),
-    geom_size: wp.array(dtype=wp.vec3),
-    geom_rbound: wp.array(dtype=float),
-    geom_friction: wp.array(dtype=wp.vec3),
-    geom_margin: wp.array(dtype=float),
-    geom_gap: wp.array(dtype=float),
-    mesh_vertadr: wp.array(dtype=int),
-    mesh_vertnum: wp.array(dtype=int),
-    mesh_vert: wp.array(dtype=wp.vec3),
-    nxn_geom_pair: wp.array(dtype=wp.vec2i),
-    nxn_pairid: wp.array(dtype=int),
-    pair_dim: wp.array(dtype=int),
-    pair_solref: wp.array(dtype=wp.vec2),
-    pair_solreffriction: wp.array(dtype=wp.vec2),
-    pair_solimp: wp.array(dtype=mjwarp_types.vec5),
-    pair_margin: wp.array(dtype=float),
-    pair_gap: wp.array(dtype=float),
-    pair_friction: wp.array(dtype=mjwarp_types.vec5),
-    nconmax: int,
-    ncon: wp.array(dtype=int),
-    geom_xpos: wp.array(dtype=wp.vec3),
-    geom_xmat: wp.array(dtype=wp.mat33),
-    sap_cumulative_sum: wp.array(dtype=int),
-    sap_segment_index: wp.array(dtype=int),
-    ncollision: wp.array(dtype=int),
-    contact__dist: wp.array(dtype=float),
-    contact__pos: wp.array(dtype=wp.vec3),
-    contact__frame: wp.array(dtype=wp.mat33),
-    contact__includemargin: wp.array(dtype=float),
-    contact__friction: wp.array(dtype=mjwarp_types.vec5),
-    contact__solref: wp.array(dtype=wp.vec2),
-    contact__solreffriction: wp.array(dtype=wp.vec2),
-    contact__solimp: wp.array(dtype=mjwarp_types.vec5),
-    contact__dim: wp.array(dtype=int),
-    contact__geom: wp.array(dtype=wp.vec2i),
-    contact__worldid: wp.array(dtype=int),
-    sap_projection_lower: wp.array2d(dtype=float),
-    sap_projection_upper: wp.array(dtype=float),
-    sap_sort_index: wp.array2d(dtype=int),
-    sap_range: wp.array(dtype=int),
-    collision_pair: wp.array(dtype=wp.vec2i),
-    collision_pairid: wp.array(dtype=int),
-    collision_worldid: wp.array(dtype=int),
-):
-  args = (
-      ngeom,
-      opt__disableflags,
-      opt__gjk_iterations,
-      opt__epa_iterations,
-      opt__epa_exact_neg_distance,
-      opt__depth_extension,
-      geom_type,
-      geom_condim,
-      geom_dataid,
-      geom_priority,
-      geom_solmix,
-      geom_solref,
-      geom_solimp,
-      geom_size,
-      geom_rbound,
-      geom_friction,
-      geom_margin,
-      geom_gap,
-      mesh_vertadr,
-      mesh_vertnum,
-      mesh_vert,
-      nxn_geom_pair,
-      nxn_pairid,
-      pair_dim,
-      pair_solref,
-      pair_solreffriction,
-      pair_solimp,
-      pair_margin,
-      pair_gap,
-      pair_friction,
-      nconmax,
-      ncon,
-      geom_xpos,
-      geom_xmat,
-      sap_cumulative_sum,
-      sap_segment_index,
-      ncollision,
-      contact__dist,
-      contact__pos,
-      contact__frame,
-      contact__includemargin,
-      contact__friction,
-      contact__solref,
-      contact__solreffriction,
-      contact__solimp,
-      contact__dim,
-      contact__geom,
-      contact__worldid,
-      sap_projection_lower,
-      sap_projection_upper,
-      sap_sort_index,
-      sap_range,
-      collision_pair,
-      collision_pairid,
-      collision_worldid,
-  )
-  names = (
-      "ngeom",
-      "opt__disableflags",
-      "opt__gjk_iterations",
-      "opt__epa_iterations",
-      "opt__epa_exact_neg_distance",
-      "opt__depth_extension",
-      "geom_type",
-      "geom_condim",
-      "geom_dataid",
-      "geom_priority",
-      "geom_solmix",
-      "geom_solref",
-      "geom_solimp",
-      "geom_size",
-      "geom_rbound",
-      "geom_friction",
-      "geom_margin",
-      "geom_gap",
-      "mesh_vertadr",
-      "mesh_vertnum",
-      "mesh_vert",
-      "nxn_geom_pair",
-      "nxn_pairid",
-      "pair_dim",
-      "pair_solref",
-      "pair_solreffriction",
-      "pair_solimp",
-      "pair_margin",
-      "pair_gap",
-      "pair_friction",
-      "nconmax",
-      "ncon",
-      "geom_xpos",
-      "geom_xmat",
-      "sap_cumulative_sum",
-      "sap_segment_index",
-      "ncollision",
-      "contact__dist",
-      "contact__pos",
-      "contact__frame",
-      "contact__includemargin",
-      "contact__friction",
-      "contact__solref",
-      "contact__solreffriction",
-      "contact__solimp",
-      "contact__dim",
-      "contact__geom",
-      "contact__worldid",
-      "sap_projection_lower",
-      "sap_projection_upper",
-      "sap_sort_index",
-      "sap_range",
-      "collision_pair",
-      "collision_pairid",
-      "collision_worldid",
-  )
-  args = ffi_helper.format_args_for_warp(*args, names=names, kernel=_collision)
-  _collision(*args)
-
-
-def collision(m: types.Model, d: types.Data):
+def _collision_jax_impl(m: types.Model, d: types.Data):
   output_dims = {
-      "contact__dist": d._impl.contact__dist.shape,
-      "contact__pos": d._impl.contact__pos.shape,
-      "contact__frame": d._impl.contact__frame.shape,
-      "contact__includemargin": d._impl.contact__includemargin.shape,
-      "contact__friction": d._impl.contact__friction.shape,
-      "contact__solref": d._impl.contact__solref.shape,
-      "contact__solreffriction": d._impl.contact__solreffriction.shape,
-      "contact__solimp": d._impl.contact__solimp.shape,
-      "contact__dim": d._impl.contact__dim.shape,
-      "contact__geom": d._impl.contact__geom.shape,
-      "contact__worldid": d._impl.contact__worldid.shape,
-      "sap_projection_lower": d._impl.sap_projection_lower.shape,
-      "sap_projection_upper": d._impl.sap_projection_upper.shape,
-      "sap_sort_index": d._impl.sap_sort_index.shape,
-      "sap_range": d._impl.sap_range.shape,
-      "collision_pair": d._impl.collision_pair.shape,
-      "collision_pairid": d._impl.collision_pairid.shape,
-      "collision_worldid": d._impl.collision_worldid.shape,
+      'ncon': d._impl.ncon.shape,
+      'contact__dist': d._impl.contact__dist.shape,
+      'contact__pos': d._impl.contact__pos.shape,
+      'contact__frame': d._impl.contact__frame.shape,
+      'contact__includemargin': d._impl.contact__includemargin.shape,
+      'contact__friction': d._impl.contact__friction.shape,
+      'contact__solref': d._impl.contact__solref.shape,
+      'contact__solreffriction': d._impl.contact__solreffriction.shape,
+      'contact__solimp': d._impl.contact__solimp.shape,
+      'contact__dim': d._impl.contact__dim.shape,
+      'contact__geom': d._impl.contact__geom.shape,
+      'contact__worldid': d._impl.contact__worldid.shape,
+      'sap_projection_lower': d._impl.sap_projection_lower.shape,
+      'sap_projection_upper': d._impl.sap_projection_upper.shape,
+      'sap_sort_index': d._impl.sap_sort_index.shape,
+      'sap_range': d._impl.sap_range.shape,
+      'collision_pair': d._impl.collision_pair.shape,
+      'collision_pairid': d._impl.collision_pairid.shape,
+      'collision_worldid': d._impl.collision_worldid.shape,
+      'ncollision': d._impl.ncollision.shape,
   }
 
-  jf = ffi_helper.jax_callable_variadic_tuple(
+  jf = ffi.jax_callable_variadic_tuple(
       _collision_shim,
-      num_outputs=18,
+      num_outputs=20,
       output_dims=output_dims,
-      vmap_method="expand_dims",
+      vmap_method=None,
       graph_compatible=True,
+      in_out_argnames={
+          'ncon',
+          'contact__dist',
+          'contact__pos',
+          'contact__frame',
+          'contact__includemargin',
+          'contact__friction',
+          'contact__solref',
+          'contact__solreffriction',
+          'contact__solimp',
+          'contact__dim',
+          'contact__geom',
+          'contact__worldid',
+          'sap_projection_lower',
+          'sap_projection_upper',
+          'sap_sort_index',
+          'sap_range',
+          'collision_pair',
+          'collision_pairid',
+          'collision_worldid',
+          'ncollision',
+      },
   )
   out = jf(
+      d.qpos.shape[0],
       m.ngeom,
       m.opt.disableflags,
       m.opt.gjk_iterations,
@@ -383,31 +254,64 @@ def collision(m: types.Model, d: types.Data):
       m.pair_gap,
       m.pair_friction,
       d._impl.nconmax,
-      d._impl.ncon,
       d.geom_xpos,
       d.geom_xmat,
       d._impl.sap_cumulative_sum,
       d._impl.sap_segment_index,
+      d._impl.ncon,
+      d._impl.contact__dist,
+      d._impl.contact__pos,
+      d._impl.contact__frame,
+      d._impl.contact__includemargin,
+      d._impl.contact__friction,
+      d._impl.contact__solref,
+      d._impl.contact__solreffriction,
+      d._impl.contact__solimp,
+      d._impl.contact__dim,
+      d._impl.contact__geom,
+      d._impl.contact__worldid,
+      d._impl.sap_projection_lower,
+      d._impl.sap_projection_upper,
+      d._impl.sap_sort_index,
+      d._impl.sap_range,
+      d._impl.collision_pair,
+      d._impl.collision_pairid,
+      d._impl.collision_worldid,
       d._impl.ncollision,
   )
   d = d.tree_replace({
-      "_impl.contact__dist": out[0],
-      "_impl.contact__pos": out[1],
-      "_impl.contact__frame": out[2],
-      "_impl.contact__includemargin": out[3],
-      "_impl.contact__friction": out[4],
-      "_impl.contact__solref": out[5],
-      "_impl.contact__solreffriction": out[6],
-      "_impl.contact__solimp": out[7],
-      "_impl.contact__dim": out[8],
-      "_impl.contact__geom": out[9],
-      "_impl.contact__worldid": out[10],
-      "_impl.sap_projection_lower": out[11],
-      "_impl.sap_projection_upper": out[12],
-      "_impl.sap_sort_index": out[13],
-      "_impl.sap_range": out[14],
-      "_impl.collision_pair": out[15],
-      "_impl.collision_pairid": out[16],
-      "_impl.collision_worldid": out[17],
+      '_impl.ncon': out[0],
+      '_impl.contact__dist': out[1],
+      '_impl.contact__pos': out[2],
+      '_impl.contact__frame': out[3],
+      '_impl.contact__includemargin': out[4],
+      '_impl.contact__friction': out[5],
+      '_impl.contact__solref': out[6],
+      '_impl.contact__solreffriction': out[7],
+      '_impl.contact__solimp': out[8],
+      '_impl.contact__dim': out[9],
+      '_impl.contact__geom': out[10],
+      '_impl.contact__worldid': out[11],
+      '_impl.sap_projection_lower': out[12],
+      '_impl.sap_projection_upper': out[13],
+      '_impl.sap_sort_index': out[14],
+      '_impl.sap_range': out[15],
+      '_impl.collision_pair': out[16],
+      '_impl.collision_pairid': out[17],
+      '_impl.collision_worldid': out[18],
+      '_impl.ncollision': out[19],
   })
   return d
+
+
+@jax.custom_batching.custom_vmap
+@ffi.marshal_jax_warp_callable
+def collision(m: types.Model, d: types.Data):
+  return _collision_jax_impl(m, d)
+
+
+@collision.def_vmap
+@ffi.marshal_custom_vmap
+def collision_vmap(unused_axis_size, is_batched, m, d):
+  d = collision(m, d)
+  return d, is_batched[1]

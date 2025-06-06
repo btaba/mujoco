@@ -7,7 +7,6 @@ from typing import Any, Callable, Sequence, Tuple
 from absl import app
 from absl import flags
 import jax
-from jax import numpy as jp
 import mujoco
 from mujoco import mjx
 from mujoco.mjx.warp import smooth as wp_smooth
@@ -42,13 +41,14 @@ def _measure(fn, *args) -> Tuple[float, float]:
 
   times = []
 
-  for _ in range(5):
+  for i in range(5):
     beg = time.perf_counter()
     result = compiled_fn(*args)
     jax.block_until_ready(result)
     end = time.perf_counter()
     run_time = end - beg
     times.append(run_time)
+    print('Measure run: ', i, f', runtime: {run_time:.3f}')
 
   return jit_time, sum(times) / len(times)
 
@@ -60,7 +60,6 @@ def benchmark(
     nstep: int = 1000,
     nenv: int = 8192,
     unroll_steps: int = 4,
-    function: str = 'kinematics',
 ) -> Tuple[float, float, int]:
   """Benchmark a model."""
 
@@ -113,6 +112,7 @@ def benchmark_raw_warp(
       geom_xmat: wp.array2d(dtype=wp.mat33),
   ):
     wp.copy(d.qpos, qpos_in)
+    print('Calling kinematics')
     mjwarp.kinematics(mw, d)
     wp.copy(xpos, d.xpos)
     wp.copy(xquat, d.xquat)
@@ -204,16 +204,16 @@ def _main(_: Sequence[str]):
   print(f' timestep             : {m.opt.timestep}')
   print(f' unroll               : {unroll}\n')
 
-  for name, mx_, op in (('WARP FFI', mw, func_warp), ('Pure JAX', mx, func_jax)):
+  for name, mx_, op in (('JAX WARP FFI', mw, func_warp), ('Pure JAX', mx, func_jax)):
     if op is not None:
       jit_time, run_time, steps = benchmark(
-          m, mx_, op, nstep, nenv, unroll, function=function_
+          m, mx_, op, nstep, nenv, unroll
       )
 
       print(f' {name}:')
       print(f' JIT time             : {jit_time:.2f} s')
       print(f' simulation time      : {run_time:.2f} s')
-      print(f' steps per second     : { steps / run_time:.0f}')
+      print(f' steps per second     : { steps / run_time:,.0f}')
       print(
           f' realtime factor      : { steps * m.opt.timestep / run_time:.2f} x'
       )
@@ -223,7 +223,7 @@ def _main(_: Sequence[str]):
   print(f' Pure WARP:')
   print(f' JIT time             : {jit_time:.2f} s')
   print(f' simulation time      : {run_time:.2f} s')
-  print(f' steps per second     : { steps / run_time:.0f}')
+  print(f' steps per second     : { steps / run_time:,.0f}')
   print(
       f' realtime factor      : { steps * m.opt.timestep / run_time:.2f} x'
   )
