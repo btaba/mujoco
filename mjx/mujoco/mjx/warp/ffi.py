@@ -101,9 +101,10 @@ def jax_callable_variadic_tuple(
 
 def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
   """Formats a single argument for warp."""
-  # Handle variadic tuples.
   typ_args = typing.get_args(annotation)
   annotation_origin = typing.get_origin(annotation)
+
+  # Handle variadic tuples.
   if annotation_origin == tuple and len(typ_args) == 2 and typ_args[1] == ...:
     return tuple(
         _format_arg(arg[i], name + f"_{i}", typ_args[0], verbose)
@@ -119,34 +120,33 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
   if arg.ndim != expected_ndim:
     raise AssertionError('Arg ndim {arg.ndim} does not matche expected ndim {expected_ndim}.')
 
+  # Add stride 0 to first axis in case the underlying argument is batched.
+  # NB: the outer marshalling effectively does an "expand_dims".
   if arg.shape[0] == 1:
-    arg = arg
     old_strides = arg.strides
     arg.strides = (0,) + arg.strides[1:]
-    new_arg = arg
     if verbose:
       print(
           f"Leading batch dim of 1, adding stride: {name} {old_strides} =>"
-          f" {new_arg.strides}"
+          f" {arg.strides}"
       )
-    return new_arg
+    return arg
 
   if verbose:
     print(f"Did nothing: {name}: {arg.shape}")
   return arg
 
 
-def format_args_for_warp(
-    *args: Any, names: tuple[str, ...], kernel: Any, verbose: bool = True
-) -> Any:
-  """Formats args for warp assuming vmap_method="expand_dims"."""
-  new_args = []
-  annotations = kernel.__annotations__
-  for i in range(len(args)):
-    new_args.append(
-        _format_arg(args[i], names[i], annotations[names[i]], verbose)
-    )
-  return new_args
+def format_args_for_warp(func, verbose=True):
+  @functools.wraps(func)
+  def wrapper(*args):
+    args = list(args)
+    annotations = func.__annotations__
+    assert len(args) == len(annotations)
+    for i, (name, annotation) in enumerate(annotations.items()):
+      args[i] = _format_arg(args[i], name, annotation, verbose)
+    return func(*args)
+  return wrapper
 
 
 def _get_ndim_from_tree_path(path, ndim_map) -> Optional[int]:
