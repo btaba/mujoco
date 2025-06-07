@@ -450,6 +450,9 @@ def forward(m: Model, d: Data) -> Data:
 @named_scope
 def step(m: Model, d: Data) -> Data:
   """Advance simulation."""
+  if m.backend_impl == BackendImpl.WARP and d.backend_impl == BackendImpl.WARP:
+    return wp_forward.step(m, d)
+
   d = forward(m, d)
 
   if m.opt.integrator == IntegratorType.EULER:
