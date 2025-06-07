@@ -742,8 +742,8 @@ class Model(PyTreeNode):
   light_pos: jax.Array
   light_dir: jax.Array
   light_poscom0: jax.Array
-  light_pos0: np.ndarray
-  light_dir0: np.ndarray
+  light_pos0: jax.Array
+  light_dir0: jax.Array
   light_cutoff: jax.Array
   mesh_vertadr: np.ndarray
   mesh_vertnum: np.ndarray

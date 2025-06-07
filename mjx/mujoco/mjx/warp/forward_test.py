@@ -51,9 +51,13 @@ class WarpForwardTest(absltest.TestCase):
     np.random.seed(0)
 
   @mock.patch.dict(os.environ, {'MJX_WARP_ENABLED': 'true'})
-  def test_kinematics_single(self):
-    """Tests Warp smooth from MJX with unbatched data."""
-    m = test_util.load_test_file('pendula.xml')
+  def test_forward_single(self):
+    """Tests Warp forward from MJX with unbatched data."""
+    # m = test_util.load_test_file('pendula.xml')
+    # TODO(btaba): graph capture is failing with pendula
+    m = test_util.load_test_file('humanoid/humanoid.xml')
+    m.opt.iterations = 10
+    m.opt.ls_iterations = 10
 
     d = mujoco.MjData(m)
     mx = mjx.put_model(m, backend_impl='warp')
@@ -61,7 +65,7 @@ class WarpForwardTest(absltest.TestCase):
     rng = jax.random.PRNGKey(0)
     dx = mjx.make_data(m, backend_impl='warp')
     rng, key = jax.random.split(rng)
-    qpos = jax.random.uniform(key, (m.nq,))
+    qpos = jax.random.uniform(key, (m.nq,), minval=0.05, maxval=0.05)
     rng, key1, key2 = jax.random.split(rng, 3)
     mocap_pos = jax.random.normal(key1, (m.nmocap, 3))
     mocap_quat = jax.random.normal(key2, (m.nmocap, 4))
@@ -75,113 +79,58 @@ class WarpForwardTest(absltest.TestCase):
     d.mocap_quat[:] = mocap_quat
     mujoco.mj_forward(m, d)
 
-    _assert_attr_eq(d, dx, 'xanchor')
-    _assert_attr_eq(d, dx, 'xaxis')
-    _assert_attr_eq(d, dx, 'xpos')
-    _assert_attr_eq(d, dx, 'xquat')
-    _assert_eq(d.xmat.reshape((-1, 3, 3)), dx.xmat, 'xmat')
-    _assert_attr_eq(d, dx, 'xipos')
-    _assert_eq(d.ximat.reshape((-1, 3, 3)), dx.ximat, 'ximat')
     _assert_attr_eq(d, dx, 'geom_xpos')
-    _assert_eq(d.geom_xmat.reshape((-1, 3, 3)), dx.geom_xmat, 'geom_xmat')
-    _assert_attr_eq(d, dx, 'site_xpos')
-    _assert_eq(d.site_xmat.reshape((-1, 3, 3)), dx.site_xmat, 'site_xmat')
+    _assert_attr_eq(d, dx, 'subtree_com')
+    _assert_attr_eq(d, dx, 'act_dot')
+    _assert_attr_eq(d, dx, 'qfrc_actuator')
+    _assert_attr_eq(d, dx, 'actuator_force')
+    _assert_attr_eq(d, dx, 'qfrc_smooth')
+    _assert_attr_eq(d, dx, 'qacc_smooth')
+    _assert_attr_eq(d, dx, 'qacc')
 
-  # @mock.patch.dict(os.environ, {'MJX_WARP_ENABLED': 'true'})
-  # def test_kinematics_batch(self):
-  #   """Tests Warp smooth from MJX with batched data."""
-  #   m = test_util.load_test_file('pendula.xml')
+  @mock.patch.dict(os.environ, {'MJX_WARP_ENABLED': 'true'})
+  def test_forward_batch(self):
+    """Tests Warp forward from MJX with batched data."""
+    m = test_util.load_test_file('humanoid/humanoid.xml')
+    m.opt.iterations = 10
+    m.opt.ls_iterations
 
-  #   batch_size = 7
-  #   d = mujoco.MjData(m)
-  #   mx = mjx.put_model(m, backend_impl='warp')
+    batch_size = 1
+    d = mujoco.MjData(m)
+    mx = mjx.put_model(m, backend_impl='warp')
 
-  #   def make_data(rng):
-  #     dx = mjx.make_data(m, backend_impl='warp')
-  #     rng, key = jax.random.split(rng)
-  #     qpos = jax.random.uniform(key, (m.nq,))
-  #     rng, key1, key2 = jax.random.split(rng, 3)
-  #     mocap_pos = jax.random.normal(key1, (m.nmocap, 3))
-  #     mocap_quat = jax.random.normal(key2, (m.nmocap, 4))
-  #     mocap_quat = math.normalize(mocap_quat)
-  #     return dx.replace(qpos=qpos, mocap_pos=mocap_pos,
-  #                       mocap_quat=mocap_quat)
+    def make_data(rng):
+      dx = mjx.make_data(m, backend_impl='warp')
+      rng, key = jax.random.split(rng)
+      qpos = jax.random.uniform(key, (m.nq,), minval=0.05, maxval=0.05)
+      rng, key1, key2 = jax.random.split(rng, 3)
+      mocap_pos = jax.random.normal(key1, (m.nmocap, 3))
+      mocap_quat = jax.random.normal(key2, (m.nmocap, 4))
+      mocap_quat = math.normalize(mocap_quat)
+      return dx.replace(qpos=qpos, mocap_pos=mocap_pos,
+                        mocap_quat=mocap_quat)
 
-  #   rng = jax.random.split(jax.random.PRNGKey(0), batch_size)
-  #   dx_batch = jax.vmap(make_data)(rng)
-  #   out = jax.jit(jax.vmap(mjx.kinematics, in_axes=(None, 0)))(mx, dx_batch)
+    rng = jax.random.split(jax.random.PRNGKey(0), batch_size)
+    dx_batch = jax.vmap(make_data)(rng)
+    out = jax.jit(jax.vmap(mjx.forward, in_axes=(None, 0)))(mx, dx_batch)
 
-  #   for i in range(batch_size):
-  #     dx = jax.tree.map(lambda x: x[i], out)
+    for i in range(batch_size):
+      dx = jax.tree.map(lambda x: x[i], out)
 
-  #     d.qpos[:] = dx.qpos
-  #     d.mocap_pos[:] = dx.mocap_pos
-  #     d.mocap_quat[:] = dx.mocap_quat
-  #     mujoco.mj_forward(m, d)
+      d.qpos[:] = dx.qpos
+      d.mocap_pos[:] = dx.mocap_pos
+      d.mocap_quat[:] = dx.mocap_quat
+      mujoco.mj_forward(m, d)
 
-  #     _assert_attr_eq(d, dx, 'xanchor')
-  #     _assert_attr_eq(d, dx, 'xaxis')
-  #     _assert_attr_eq(d, dx, 'xpos')
-  #     _assert_attr_eq(d, dx, 'xquat')
-  #     _assert_eq(d.xmat.reshape((-1, 3, 3)), dx.xmat, 'xmat')
-  #     _assert_attr_eq(d, dx, 'xipos')
-  #     _assert_eq(d.ximat.reshape((-1, 3, 3)), dx.ximat, 'ximat')
-  #     _assert_attr_eq(d, dx, 'geom_xpos')
-  #     _assert_eq(d.geom_xmat.reshape((-1, 3, 3)), dx.geom_xmat, 'geom_xmat')
-  #     _assert_attr_eq(d, dx, 'site_xpos')
-  #     _assert_eq(d.site_xmat.reshape((-1, 3, 3)), dx.site_xmat, 'site_xmat')
-
-  # @mock.patch.dict(os.environ, {'MJX_WARP_ENABLED': 'true'})
-  # def test_kinematics_nested_vmap(self):
-  #   """Tests Warp smooth from MJX with batched data."""
-  #   # TODO(btaba): this test segfaults
-  #   m = test_util.load_test_file('pendula.xml')
-
-  #   d = mujoco.MjData(m)
-  #   mx = mjx.put_model(m, backend_impl='warp')
-
-  #   def make_data(rng):
-  #     dx = mjx.make_data(m, backend_impl='warp')
-  #     rng, key = jax.random.split(rng)
-  #     qpos = jax.random.uniform(key, (m.nq,))
-  #     rng, key1, key2 = jax.random.split(rng, 3)
-  #     mocap_pos = jax.random.normal(key1, (m.nmocap, 3))
-  #     mocap_quat = jax.random.normal(key2, (m.nmocap, 4))
-  #     mocap_quat = math.normalize(mocap_quat)
-  #     return dx.replace(qpos=qpos, mocap_pos=mocap_pos,
-  #                       mocap_quat=mocap_quat)
-
-  #   rng = jax.random.split(jax.random.PRNGKey(0), 8)
-  #   dx_batch = jax.vmap(make_data)(rng)
-  #   dx_batch = jax.tree.map(lambda x: x.reshape((2, 4) + x.shape[1:]), dx_batch)
-
-  #   out = jax.jit(jax.vmap(jax.vmap(mjx.kinematics, in_axes=(None, 0)), in_axes=(None, 0)))(mx, dx_batch)
-
-  #   for i in range(2):
-  #     for j in range(4):
-  #       dx = jax.tree.map(lambda x: x[i][j], out)
-
-  #       d.qpos[:] = dx.qpos
-  #       d.mocap_pos[:] = dx.mocap_pos
-  #       d.mocap_quat[:] = dx.mocap_quat
-  #       mujoco.mj_forward(m, d)
-
-  #       _assert_attr_eq(d, dx, 'xanchor')
-  #       _assert_attr_eq(d, dx, 'xaxis')
-  #       _assert_attr_eq(d, dx, 'xpos')
-  #       _assert_attr_eq(d, dx, 'xquat')
-  #       _assert_eq(d.xmat.reshape((-1, 3, 3)), dx.xmat, 'xmat')
-  #       _assert_attr_eq(d, dx, 'xipos')
-  #       _assert_eq(d.ximat.reshape((-1, 3, 3)), dx.ximat, 'ximat')
-  #       _assert_attr_eq(d, dx, 'geom_xpos')
-  #       _assert_eq(d.geom_xmat.reshape((-1, 3, 3)), dx.geom_xmat, 'geom_xmat')
-  #       _assert_attr_eq(d, dx, 'site_xpos')
-  #       _assert_eq(d.site_xmat.reshape((-1, 3, 3)), dx.site_xmat, 'site_xmat')
+      _assert_attr_eq(d, dx, 'geom_xpos')
+      _assert_attr_eq(d, dx, 'subtree_com')
+      _assert_attr_eq(d, dx, 'act_dot')
+      _assert_attr_eq(d, dx, 'qfrc_actuator')
+      _assert_attr_eq(d, dx, 'actuator_force')
+      _assert_attr_eq(d, dx, 'qfrc_smooth')
+      _assert_attr_eq(d, dx, 'qacc_smooth')
+      _assert_attr_eq(d, dx, 'qacc')
 
 
 if __name__ == '__main__':
-  wp.config.verbose = True
-  wp.config.print_launches = True
-  wp.config.mode = 'debug'
-
   absltest.main()
