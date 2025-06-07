@@ -10,6 +10,7 @@ import jax
 import mujoco
 from mujoco import mjx
 from mujoco.mjx.warp import smooth as wp_smooth
+from mujoco.mjx.warp import forward as wp_forward
 import warp as wp
 import mujoco_warp as mjwarp
 from warp.jax_experimental import ffi as warp_ffi
@@ -48,7 +49,7 @@ def _measure(fn, *args) -> Tuple[float, float]:
     end = time.perf_counter()
     run_time = end - beg
     times.append(run_time)
-    print('Measure run: ', i, f', runtime: {run_time:.3f}')
+    print('Measure run: ', i, f', run time: {run_time:.3f}')
 
   return jit_time, sum(times) / len(times)
 
@@ -98,7 +99,7 @@ def benchmark_raw_warp(
     function: str = 'kinematics',
 ):
   if function != 'kinematics':
-    raise ValueError()
+    return
   def warp_kinematics(
       qpos_in: wp.array2d(dtype=wp.float32),
       xpos: wp.array2d(dtype=wp.vec3),
@@ -193,6 +194,12 @@ def _main(_: Sequence[str]):
   if function_ == 'kinematics':
     func_warp = jax.vmap(wp_smooth.kinematics, in_axes=(None, 0))
     func_jax = jax.vmap(mjx.kinematics, in_axes=(None, 0))
+  elif function_ == 'forward':
+    func_warp = jax.vmap(wp_forward.forward, in_axes=(None, 0))
+    func_jax = jax.vmap(mjx.forward, in_axes=(None, 0))
+  elif function_ == 'step':
+    func_warp = jax.vmap(wp_forward.step, in_axes=(None, 0))
+    func_jax = jax.vmap(mjx.step, in_axes=(None, 0))
   else:
     raise ValueError(f'Unknown function: {function_}')
 
