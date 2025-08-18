@@ -620,6 +620,7 @@ class FfiCallable:
                     wp.capture_launch(capture.graph)
                     # keep a reference to the capture object and reuse it with same buffers
                     call_desc.captures[buffer_hash] = capture
+                    print('Captured a new graph, ', capture)
                 else:
                     # not capturing
                     self.func(*arg_list)
