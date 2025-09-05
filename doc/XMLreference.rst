@@ -523,11 +523,21 @@ from its default.
 :at:`contact`: :at-val:`[disable, enable], "enable"`
    This flag disables collision detection and all standard computations related to contact constraints.
 
-.. _option-flag-passive:
+.. _option-flag-spring:
 
-:at:`passive`: :at-val:`[disable, enable], "enable"`
-   This flag disables the simulation of joint and tendon spring-dampers, fluid dynamics forces, and custom passive
-   forces computed by the :ref:`mjcb_passive` callback. As a result, no passive forces are applied.
+:at:`spring`: :at-val:`[disable, enable], "enable"`
+   This flag disables passive joint and tendon springs. If passive :ref:`damper <option-flag-damper>` forces are
+   also disabled, **all** passive forces are disabled, including gravity compensation, fluid forces, forces computed by
+   the :ref:`mjcb_passive` callback, and forces computed by :ref:`plugins <exPlugin>` when passed the
+   :ref:`mjPLUGIN_PASSIVE<mjtPluginCapabilityBit>` capability flag.
+
+.. _option-flag-damper:
+
+:at:`damping`: :at-val:`[disable, enable], "enable"`
+   This flag disables passive joint and tendon dampers. If passive :ref:`spring <option-flag-spring>` forces are also
+   disabled, **all** passive forces are disabled, including gravity compensation, fluid forces, forces computed by the
+   :ref:`mjcb_passive` callback, and forces computed by :ref:`plugins <exPlugin>` when passed the
+   :ref:`mjPLUGIN_PASSIVE<mjtPluginCapabilityBit>` capability flag.
 
 .. _option-flag-gravity:
 
@@ -609,7 +619,7 @@ from its default.
 .. _option-flag-override:
 
 :at:`override`: :at-val:`[disable, enable], "disable"`
-   This flag enables to :ref:`Contact override <COverride>` mechanism explained above.
+   This flag enables the :ref:`Contact override <COverride>` mechanism.
 
 .. _option-flag-energy:
 
@@ -3725,6 +3735,7 @@ saving the XML:
 .. _flexcomp-contact-solimp:
 .. _flexcomp-contact-margin:
 .. _flexcomp-contact-gap:
+.. _flexcomp-contact-passive:
 
 .. |body/flexcomp/contact attrib list| replace::
    :at:`internal`, :at:`selfcollide`, :at:`vertcollide`, :at:`activelayers`, :at:`contype`, :at:`conaffinity`,
@@ -4287,6 +4298,13 @@ extensions specific to flexes.
 
 |deformable/flex/contact attrib list|
    Same meaning as regular :ref:`geom <body-geom>` attributes.
+
+.. _flex-contact-passive:
+
+:at:`passive`: :at-val:`[true, false], "false"`
+   When enabled, the contact is not added to the contact solver but it is instead used to compute passive
+   (spring-damper) contact forces. All contacts, regardless of the specified condim, are frictionless (condim 1). This
+   is an experimental feature and might change in future releases.
 
 
 .. _deformable-skin:

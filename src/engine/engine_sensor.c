@@ -23,8 +23,9 @@
 #include "engine/engine_callback.h"
 #include "engine/engine_collision_sdf.h"
 #include "engine/engine_core_smooth.h"
+#include "engine/engine_core_util.h"
 #include "engine/engine_crossplatform.h"
-#include "engine/engine_io.h"
+#include "engine/engine_memory.h"
 #include "engine/engine_plugin.h"
 #include "engine/engine_ray.h"
 #include "engine/engine_sort.h"
@@ -1417,7 +1418,7 @@ void mj_energyPos(const mjModel* m, mjData* d) {
   }
 
   // add joint-level springs
-  if (!mjDISABLED(mjDSBL_PASSIVE)) {
+  if (!mjDISABLED(mjDSBL_SPRING)) {
     for (int i=0; i < m->njnt; i++) {
       stiffness = m->jnt_stiffness[i];
       padr = m->jnt_qposadr[i];
@@ -1450,7 +1451,7 @@ void mj_energyPos(const mjModel* m, mjData* d) {
   }
 
   // add tendon-level springs
-  if (!mjDISABLED(mjDSBL_PASSIVE)) {
+  if (!mjDISABLED(mjDSBL_SPRING)) {
     for (int i=0; i < m->ntendon; i++) {
       stiffness = m->tendon_stiffness[i];
       mjtNum length = d->ten_length[i];
@@ -1469,8 +1470,8 @@ void mj_energyPos(const mjModel* m, mjData* d) {
     }
   }
 
-  // add flex-level springs for dim=1 (dim>1 requires plugins)
-  if (!mjDISABLED(mjDSBL_PASSIVE)) {
+  // add flex-level springs for dim=1
+  if (!mjDISABLED(mjDSBL_SPRING)) {
     for (int i=0; i < m->nflex; i++) {
       stiffness = m->flex_edgestiffness[i];
       if (m->flex_rigid[i] || stiffness == 0 || m->flex_dim[i] > 1) {

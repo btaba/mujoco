@@ -167,20 +167,21 @@ public enum mjtDisableBit : int{
   mjDSBL_FRICTIONLOSS = 4,
   mjDSBL_LIMIT = 8,
   mjDSBL_CONTACT = 16,
-  mjDSBL_PASSIVE = 32,
-  mjDSBL_GRAVITY = 64,
-  mjDSBL_CLAMPCTRL = 128,
-  mjDSBL_WARMSTART = 256,
-  mjDSBL_FILTERPARENT = 512,
-  mjDSBL_ACTUATION = 1024,
-  mjDSBL_REFSAFE = 2048,
-  mjDSBL_SENSOR = 4096,
-  mjDSBL_MIDPHASE = 8192,
-  mjDSBL_EULERDAMP = 16384,
-  mjDSBL_AUTORESET = 32768,
-  mjDSBL_NATIVECCD = 65536,
-  mjDSBL_ISLAND = 131072,
-  mjNDISABLE = 18,
+  mjDSBL_SPRING = 32,
+  mjDSBL_DAMPER = 64,
+  mjDSBL_GRAVITY = 128,
+  mjDSBL_CLAMPCTRL = 256,
+  mjDSBL_WARMSTART = 512,
+  mjDSBL_FILTERPARENT = 1024,
+  mjDSBL_ACTUATION = 2048,
+  mjDSBL_REFSAFE = 4096,
+  mjDSBL_SENSOR = 8192,
+  mjDSBL_MIDPHASE = 16384,
+  mjDSBL_EULERDAMP = 32768,
+  mjDSBL_AUTORESET = 65536,
+  mjDSBL_NATIVECCD = 131072,
+  mjDSBL_ISLAND = 262144,
+  mjNDISABLE = 19,
 }
 public enum mjtEnableBit : int{
   mjENBL_OVERRIDE = 1,
@@ -581,6 +582,8 @@ public enum mjtMouse : int{
   mjMOUSE_MOVE_V = 3,
   mjMOUSE_MOVE_H = 4,
   mjMOUSE_ZOOM = 5,
+  mjMOUSE_MOVE_V_REL = 6,
+  mjMOUSE_MOVE_H_REL = 7,
 }
 public enum mjtPertBit : int{
   mjPERT_TRANSLATE = 1,
@@ -5073,6 +5076,11 @@ public unsafe struct mjLROpt_ {
 }
 
 [StructLayout(LayoutKind.Sequential)]
+public unsafe struct mjCache_ {
+  public void* impl_;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 public unsafe struct _mjVFS
 {
   public void* impl_;
@@ -5476,6 +5484,7 @@ public unsafe struct mjModel_ {
   public byte* flex_internal;
   public int* flex_selfcollide;
   public int* flex_activelayers;
+  public int* flex_passive;
   public int* flex_dim;
   public int* flex_matid;
   public int* flex_group;
@@ -6329,6 +6338,21 @@ public static unsafe extern int mj_deleteFileVFS(void* vfs, [MarshalAs(Unmanaged
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
 public static unsafe extern void mj_deleteVFS(void* vfs);
+
+[DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
+public static unsafe extern UIntPtr mj_getCacheSize(mjCache_* cache);
+
+[DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
+public static unsafe extern UIntPtr mj_getCacheCapacity(mjCache_* cache);
+
+[DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
+public static unsafe extern UIntPtr mj_setCacheCapacity(mjCache_* cache, UIntPtr size);
+
+[DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
+public static unsafe extern mjCache_* mj_getCache();
+
+[DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
+public static unsafe extern void mj_clearCache(mjCache_* cache);
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
 public static unsafe extern mjModel_* mj_loadXML([MarshalAs(UnmanagedType.LPStr)]string filename, void* vfs, StringBuilder error, int error_sz);

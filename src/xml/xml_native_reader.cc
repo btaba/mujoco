@@ -118,8 +118,8 @@ const char* MJCF[nMJCF][mjXATTRNUM] = {
         "solver", "iterations", "ls_iterations", "noslip_iterations", "ccd_iterations",
         "sdf_iterations", "sdf_initpoints", "actuatorgroupdisable"},
     {"<"},
-        {"flag", "?", "23", "constraint", "equality", "frictionloss", "limit", "contact",
-            "passive", "gravity", "clampctrl", "warmstart",
+        {"flag", "?", "24", "constraint", "equality", "frictionloss", "limit", "contact",
+            "spring", "damper", "gravity", "clampctrl", "warmstart",
             "filterparent", "actuation", "refsafe", "sensor", "midphase", "eulerdamp", "autoreset",
             "nativeccd", "island", "override", "energy", "fwdinv", "invdiscrete", "multiccd"},
     {">"},
@@ -316,9 +316,9 @@ const char* MJCF[nMJCF][mjXATTRNUM] = {
         {"<"},
             {"edge", "?", "5", "equality", "solref", "solimp", "stiffness", "damping"},
             {"elasticity", "?", "5", "young", "poisson", "damping", "thickness", "elastic2d"},
-            {"contact", "?", "14", "contype", "conaffinity", "condim", "priority",
+            {"contact", "?", "15", "contype", "conaffinity", "condim", "priority",
                 "friction", "solmix", "solref", "solimp", "margin", "gap",
-                "internal", "selfcollide", "activelayers", "vertcollide"},
+                "internal", "selfcollide", "activelayers", "vertcollide", "passive"},
             {"pin", "*", "4", "id", "range", "grid", "gridrange"},
             {"plugin", "*", "2", "plugin", "instance"},
             {"<"},
@@ -332,9 +332,9 @@ const char* MJCF[nMJCF][mjXATTRNUM] = {
         {"flex", "*", "13", "name", "group", "dim", "radius", "material",
             "rgba", "flatskin", "body", "vertex", "element", "texcoord", "elemtexcoord", "node"},
         {"<"},
-            {"contact", "?", "14", "contype", "conaffinity", "condim", "priority",
+            {"contact", "?", "15", "contype", "conaffinity", "condim", "priority",
                 "friction", "solmix", "solref", "solimp", "margin", "gap",
-                "internal", "selfcollide", "activelayers", "vertcollide"},
+                "internal", "selfcollide", "activelayers", "vertcollide", "passive"},
             {"edge", "?", "2", "stiffness", "damping"},
             {"elasticity", "?", "5", "young", "poisson", "damping", "thickness", "elastic2d"},
         {">"},
@@ -1187,7 +1187,8 @@ void mjXReader::Option(XMLElement* section, mjOption* opt) {
     READDSBL("frictionloss", mjDSBL_FRICTIONLOSS)
     READDSBL("limit",        mjDSBL_LIMIT)
     READDSBL("contact",      mjDSBL_CONTACT)
-    READDSBL("passive",      mjDSBL_PASSIVE)
+    READDSBL("spring",       mjDSBL_SPRING)
+    READDSBL("damper",       mjDSBL_DAMPER)
     READDSBL("gravity",      mjDSBL_GRAVITY)
     READDSBL("clampctrl",    mjDSBL_CLAMPCTRL)
     READDSBL("warmstart",    mjDSBL_WARMSTART)
@@ -1458,6 +1459,9 @@ void mjXReader::OneFlex(XMLElement* elem, mjsFlex* flex) {
     MapValue(cont, "selfcollide", &flex->selfcollide, flexself_map, 5);
     if (MapValue(cont, "vertcollide", &flex->vertcollide, bool_map, 2)) {
       flex->vertcollide = (n == 1);
+    }
+    if (MapValue(cont, "passive", &flex->passive, bool_map, 2)) {
+      flex->passive = (n == 1);
     }
     ReadAttrInt(cont, "activelayers", &flex->activelayers);
   }
@@ -2719,6 +2723,9 @@ void mjXReader::OneFlexcomp(XMLElement* elem, mjsBody* body, const mjVFS* vfs) {
     MapValue(cont, "selfcollide", &dflex.selfcollide, flexself_map, 5);
     if (MapValue(cont, "vertcollide", &n, bool_map, 2)) {
       dflex.vertcollide = (n == 1);
+    }
+    if (MapValue(cont, "passive", &n, bool_map, 2)) {
+      dflex.passive = (n == 1);
     }
     ReadAttrInt(cont, "activelayers", &dflex.activelayers);
   }

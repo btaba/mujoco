@@ -2323,7 +2323,7 @@ void* LRfunc(void* arg) {
 void mjCModel::LengthRange(mjModel* m, mjData* data) {
   // save options and modify
   mjOption saveopt = m->opt;
-  m->opt.disableflags = mjDSBL_FRICTIONLOSS | mjDSBL_CONTACT | mjDSBL_PASSIVE |
+  m->opt.disableflags = mjDSBL_FRICTIONLOSS | mjDSBL_CONTACT | mjDSBL_SPRING | mjDSBL_DAMPER |
                         mjDSBL_GRAVITY | mjDSBL_ACTUATION;
   if (compiler.LRopt.timestep > 0) {
     m->opt.timestep = compiler.LRopt.timestep;
@@ -3321,6 +3321,7 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->flex_flatskin[i] = pfl->flatskin;
     m->flex_selfcollide[i] = pfl->selfcollide;
     m->flex_activelayers[i] = pfl->activelayers;
+    m->flex_passive[i] = pfl->passive;
     m->flex_bvhnum[i] = pfl->tree.Nbvh();
     m->flex_bvhadr[i] = pfl->tree.Nbvh() ? bvh_adr : -1;
 

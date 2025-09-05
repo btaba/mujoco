@@ -34,6 +34,16 @@ General
      principled and well-defined. Since this change to RK4 is effectively a bug fix, migration to the previous behavior
      is not provided.
 
+   - The ``mjDSBL_PASSIVE`` flag for disabling passive forces was removed and replaced by
+     :ref:`mjDSBL_SPRING<mjtDisableBit>` and :ref:`mjDSBL_DAMPER<mjtDisableBit>` with corresponding
+     :ref:`mjcf<option-flag-spring>` :ref:`attributes<option-flag-damper>`. Each flag disables only joint and tendon
+     springs or dampers, respectively. When both flags are set, **all** passive forces are disabled, including gravity
+     compensation, fluid forces, forces computed by the :ref:`mjcb_passive` callback, and forces computed by
+     :ref:`plugins <exPlugin>` when passed the :ref:`mjPLUGIN_PASSIVE<mjtPluginCapabilityBit>` capability flag.
+
+     **Migration:** Set both flags to recover the behavior of the previous flag.
+
+
 .. admonition:: Breaking ABI changes
    :class: attention
 
@@ -44,6 +54,7 @@ General
 
 - Added support for shells with a curved reference configuration. See this `example
   <https://github.com/google-deepmind/mujoco/blob/main/model/flex/basket.xml>`__.
+- Added experimental option for :ref:`passive<flex-contact-passive>` contacts involving flexes.
 
 - Added support for assigning a default material to a mesh asset using the :ref:`mesh/material <asset-mesh-material>`
   attribute.
