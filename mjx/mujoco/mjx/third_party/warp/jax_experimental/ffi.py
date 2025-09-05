@@ -310,6 +310,7 @@ class FfiKernel:
 
             # get device and stream
             device = wp.device_from_jax(get_jax_device())
+            print('>>>>>>>> device')
             stream = get_stream_from_callframe(call_frame.contents)
 
             # get kernel hooks

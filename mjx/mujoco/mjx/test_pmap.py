@@ -62,6 +62,6 @@ def mjwarp():
   for device in wp.get_cuda_devices():
     wp.capture_launch(graphs[str(device)])
 
-
 if __name__ == '__main__':
-  main()
+  mjwarp()
+  mjx_warp()
