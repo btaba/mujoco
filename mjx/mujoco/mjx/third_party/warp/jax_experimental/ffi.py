@@ -28,6 +28,13 @@ from warp.types import array_t, launch_bounds_t, strides_from_shape, type_to_war
 
 from .xla_ffi import *
 
+import ctypes
+
+# Load the CUDA *Driver* API library
+try:
+    cuda_driver = ctypes.CDLL('libcuda.so')
+except OSError as e:
+    raise RuntimeError(f"Could not load libcuda.so. Please ensure NVIDIA drivers are installed. Error: {e}")
 
 class GraphMode(IntEnum):
     NONE = 0  # don't capture a graph
@@ -310,7 +317,6 @@ class FfiKernel:
 
             # get device and stream
             device = wp.device_from_jax(get_jax_device())
-            print('>>>>>>>> device')
             stream = get_stream_from_callframe(call_frame.contents)
 
             # get kernel hooks
@@ -353,7 +359,6 @@ class FfiCallable:
         self.first_array_arg = None
         self.call_id = 0
         self.call_descriptors = {}
-        self.loaded_devices = set()
 
         in_out_argnames_list = in_out_argnames or []
         in_out_argnames = set(in_out_argnames_list)
@@ -383,7 +388,6 @@ class FfiCallable:
             if arg_name == "return":
                 if arg_type is not None:
                     raise TypeError("Function must not return a value")
-                continue
             else:
                 arg = FfiArg(arg_name, arg_type, arg_name in in_out_argnames)
                 if arg_name in in_out_argnames:
@@ -506,45 +510,17 @@ class FfiCallable:
             # has_side_effect=True,  # force this function to execute even if outputs aren't used
         )
 
-        # # load the module
-        # # NOTE: if the target function uses kernels from different modules, they will not be loaded here
-        # device = wp.device_from_jax(get_jax_device())
-        # module = wp.get_module(self.func.__module__)
-        # module.load(device)
-        try:
-            gpus = [d for d in jax.local_devices() if getattr(d, "platform", "") == "gpu"]
-        except Exception:
-            gpus = []
-
-        modules_to_load = {wp.get_module(self.func.__module__)}
-        try:
-            closure_cells = getattr(self.func, "__closure__", None) or []
-            for cell in closure_cells:
-                try:
-                    val = cell.cell_contents
-                except Exception:
-                    continue
-                try:
-                    if isinstance(val, wp.context.Kernel):
-                        modules_to_load.add(val.module)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        if gpus:
-            for d in gpus:
-                dev = wp.device_from_jax(d)
-                for mod in modules_to_load:
-                    mod.load(dev)
-        else:
-            device = wp.device_from_jax(get_jax_device())
-            for mod in modules_to_load:
-                mod.load(device)
+        # load the module
+        # NOTE: if the target function uses kernels from different modules, they will not be loaded here
+        devices = [wp.device_from_jax(d) for d in jax.devices()]
+        for device in devices:
+            module = wp.get_module(self.func.__module__)
+            module.load(device)
 
         # save call data to be retrieved by callback
         call_id = self.call_id
-        self.call_descriptors[call_id] = FfiCallDesc(static_inputs)
+        for i in range(len(devices)):
+            self.call_descriptors[(i, call_id)] = FfiCallDesc(static_inputs)
         self.call_id += 1
         return call(*args, call_id=call_id)
 
@@ -574,7 +550,8 @@ class FfiCallable:
             #   call_id = int(attrs["call_id"])
             attr = ctypes.cast(call_frame.contents.attrs.attrs[0], ctypes.POINTER(XLA_FFI_Scalar)).contents
             call_id = ctypes.cast(attr.value, ctypes.POINTER(ctypes.c_int64)).contents.value
-            call_desc = self.call_descriptors[call_id]
+            print('Call ID is ', call_id)
+            # call_desc = self.call_descriptors[call_id]
 
             num_inputs = call_frame.contents.args.size
             inputs = ctypes.cast(call_frame.contents.args.args, ctypes.POINTER(ctypes.POINTER(XLA_FFI_Buffer)))
@@ -586,39 +563,44 @@ class FfiCallable:
             assert num_outputs == self.num_outputs
 
             cuda_stream = get_stream_from_callframe(call_frame.contents)
+            # device_ordinal = get_device_from_thread()
+            # device_ordinal = get_device_from_buffer_ptr(inputs[0].contents.data)
+            # device = wp.get_device(f"cuda:{device_ordinal}")
+            #with _STREAM_LOCK:
+            #    if cuda_stream in self.device_cache:
+            #        device, device_ordinal = self.device_cache[cuda_stream]
+            #        print(f"Got device stream cache: {device_ordinal}")
+            #    else:
+            #        device_ordinal = get_device_from_buffer_ptr(inputs[0].contents.data)  # get_device_from_thread()
+            #        device = wp.get_device(f"cuda:{device_ordinal}")
+            #        # stream = wp.Stream(device=device, cuda_stream=cuda_stream)
+            #        self.device_cache[cuda_stream] = (device, device_ordinal)
+            #        print(f"Populated device stream cache: {device_ordinal}")
+            with _STREAM_LOCK:
+                device_ordinal = get_device_from_buffer_ptr(inputs[0].contents.data)
+                device = wp.get_device(f"cuda:{device_ordinal}")
+                # if device_ordinal in self.device_cache:
+                #     device = self.device_cache[device_ordinal]
+                # else:
+                #     device = wp.get_device(f"cuda:{device_ordinal}")
+                #     self.device_cache[device_ordinal] = device
 
-            # device = wp.get_device("cuda")
-            # print('DEVICE IS ', device)
-
-            # if str(device) not in self.loaded_devices:
-            #     module = wp.get_module(self.func.__module__)
-            #     module.load(device)
-            #     self.loaded_devices.add(str(device))
-
+            call_desc = self.call_descriptors[(device_ordinal, call_id)]
 
             if self.graph_mode == GraphMode.WARP:
                 # check if we already captured an identical call
                 ip = [inputs[i].contents.data for i in self.array_input_indices]
                 op = [outputs[i].contents.data for i in self.array_output_indices]
                 buffer_hash = hash((*ip, *op))
-
-                try:
-                    gpus = [d for d in jax.local_devices() if getattr(d, "platform", "") == "gpu"]
-                except Exception:
-                    gpus = []
-
-                print('GPUS are', gpus)
-
-                for gpu in gpus:
-                    d = wp.device_from_jax(gpu)
-
-                    capture_key = (str(d), buffer_hash)
-                    # capture_key = buffer_hash
-                    capture = call_desc.captures.get(capture_key)
-                    print("Running capture", capture_key)
+                capture_key = (device_ordinal, buffer_hash)
+                # capture = call_desc.captures.get(capture_key)
+                with _STREAM_LOCK:
+                    capture = _CAPTURES.get(capture_key)
+                    print('Retrieved capture ', capture, 'on device ', device_ordinal)
 
                     # launch existing graph
                     if capture is not None:
+                        print("Running captured graph on device", device)
                         # NOTE: We use the native graph API to avoid overhead with obtaining Stream and Device objects in Python.
                         # This code should match wp.capture_launch().
                         graph = capture.graph
@@ -629,45 +611,40 @@ class FfiCallable:
                             ):
                                 raise RuntimeError(f"Graph creation error: {wp.context.runtime.get_error_string()}")
                             graph.graph_exec = g
-    
+
                         if not wp.context.runtime.core.wp_cuda_graph_launch(graph.graph_exec, cuda_stream):
                             raise RuntimeError(f"Graph launch error: {wp.context.runtime.get_error_string()}")
 
-                # early out
-                return
+                        # early out
+                        return
 
-            try:
-                gpus = [d for d in jax.local_devices() if getattr(d, "platform", "") == "gpu"]
-            except Exception:
-                gpus = []
-            for gpu in gpus:
-                device = wp.device_from_jax(gpu)
-                # device = wp.device_from_jax(get_jax_device())
-                stream = wp.Stream(device, cuda_stream=cuda_stream)
+            # device = wp.device_from_jax(get_jax_device())
+            stream = wp.Stream(device, cuda_stream=cuda_stream)
 
-                # reconstruct the argument list
-                arg_list = []
+            # reconstruct the argument list
+            arg_list = []
 
-                # input and in-out args
-                for i, arg in enumerate(self.input_args):
-                    if arg.is_array:
-                        buffer = inputs[i].contents
-                        shape = buffer.dims[: buffer.rank - arg.dtype_ndim]
-                        arr = wp.array(ptr=buffer.data, dtype=arg.type.dtype, shape=shape, device=device)
-                        arg_list.append(arr)
-                    else:
-                        # scalar argument, get stashed value
-                        value = call_desc.static_inputs[arg.name]
-                        arg_list.append(value)
-
-                # pure output args (skip in-out FFI buffers)
-                for i, arg in enumerate(self.output_args):
-                    buffer = outputs[i + self.num_in_out].contents
+            # input and in-out args
+            for i, arg in enumerate(self.input_args):
+                if arg.is_array:
+                    buffer = inputs[i].contents
                     shape = buffer.dims[: buffer.rank - arg.dtype_ndim]
                     arr = wp.array(ptr=buffer.data, dtype=arg.type.dtype, shape=shape, device=device)
                     arg_list.append(arr)
+                else:
+                    # scalar argument, get stashed value
+                    value = call_desc.static_inputs[arg.name]
+                    arg_list.append(value)
 
-                # call the Python function with reconstructed arguments
+            # pure output args (skip in-out FFI buffers)
+            for i, arg in enumerate(self.output_args):
+                buffer = outputs[i + self.num_in_out].contents
+                shape = buffer.dims[: buffer.rank - arg.dtype_ndim]
+                arr = wp.array(ptr=buffer.data, dtype=arg.type.dtype, shape=shape, device=device)
+                arg_list.append(arr)
+
+            # call the Python function with reconstructed arguments
+            with _STREAM_LOCK:
                 with wp.ScopedStream(stream, sync_enter=False):
                     if stream.is_capturing:
                         # capturing with JAX
@@ -681,9 +658,10 @@ class FfiCallable:
                             self.func(*arg_list)
                         wp.capture_launch(capture.graph)
                         # keep a reference to the capture object and reuse it with same buffers
-                        capture_key = (str(device), buffer_hash)
                         call_desc.captures[capture_key] = capture
-                        print("Done capturing", capture_key)
+                        _CAPTURES[capture_key] = capture
+                        print("Capture on device", capture_key, capture.device)
+                        # self.call_descriptors[(device_ordinal, call_id)].captures[capture_key] = capture
                     else:
                         # not capturing
                         self.func(*arg_list)
@@ -693,9 +671,64 @@ class FfiCallable:
             return create_ffi_error(
                 call_frame.contents.api, XLA_FFI_Error_Code.UNKNOWN, f"FFI callback error: {type(e).__name__}: {e}"
             )
-
         return None
 
+_CAPTURES = {}
+_STREAM_LOCK = threading.Lock()
+
+CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL = 9
+def get_device_from_buffer_ptr(data_ptr: int) -> int:
+    """Gets the CUDA device ordinal from a device memory pointer."""
+
+    device_ordinal_out = ctypes.c_int()
+
+    # Define the function signature from the CUDA Driver API
+    # CUresult cuPointerGetAttribute(void* data, CUpointer_attribute attribute, void* ptr)
+    cuPointerGetAttribute = cuda_driver.cuPointerGetAttribute
+    cuPointerGetAttribute.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+    cuPointerGetAttribute.restype = int
+
+    # It's good practice to ensure the driver is initialized
+    cuInit = cuda_driver.cuInit
+    cuInit.argtypes = [ctypes.c_uint]
+    if cuInit(0) != 0:
+        raise RuntimeError("cuInit failed")
+
+    result = cuPointerGetAttribute(
+        ctypes.byref(device_ordinal_out),
+        CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
+        data_ptr
+    )
+
+    if result != 0: # 0 is CUDA_SUCCESS
+        raise RuntimeError(f"cuPointerGetAttribute failed with error code {result}")
+
+    return device_ordinal_out.value
+
+def get_device_from_thread() -> int:
+    """Gets the CUDA device active on the current thread."""
+
+    device_id = ctypes.c_int()
+
+    cuInit = cuda_driver.cuInit
+    cuInit.argtypes = [ctypes.c_uint]
+    cuInit.restype = int
+
+    # Gets the device for the current active context on this thread
+    cuCtxGetDevice = cuda_driver.cuCtxGetDevice
+    cuCtxGetDevice.argtypes = [ctypes.POINTER(ctypes.c_int)]
+    cuCtxGetDevice.restype = int
+
+    if cuInit(0) != 0:
+        raise RuntimeError("cuInit failed")
+
+    # JAX should have set the correct device/context for this thread
+    # before calling our callback.
+    result = cuCtxGetDevice(ctypes.byref(device_id))
+    if result != 0:
+        raise RuntimeError(f"cuCtxGetDevice failed with error code {result}. This may mean no context is active on the thread.")
+
+    return device_id.value
 
 # Holders for the custom callbacks to keep them alive.
 _FFI_CALLABLE_REGISTRY: dict[str, FfiCallable] = {}
@@ -820,8 +853,6 @@ def jax_callable(
 # func(inputs, outputs, attrs, ctx)
 #
 ###############################################################################
-
-
 def register_ffi_callback(name: str, func: Callable, graph_compatible: bool = True) -> None:
     """Create a JAX callback from a Python function.
 
@@ -910,7 +941,6 @@ def get_warp_shape(arg, dims):
     else:
         # scalar array
         return dims
-
 
 def get_jax_output_type(arg, dims):
     if isinstance(dims, int):
