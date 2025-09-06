@@ -353,6 +353,7 @@ class FfiCallable:
         self.first_array_arg = None
         self.call_id = 0
         self.call_descriptors = {}
+        self.loaded_devices = set()
 
         in_out_argnames_list = in_out_argnames or []
         in_out_argnames = set(in_out_argnames_list)
@@ -505,11 +506,41 @@ class FfiCallable:
             # has_side_effect=True,  # force this function to execute even if outputs aren't used
         )
 
-        # load the module
-        # NOTE: if the target function uses kernels from different modules, they will not be loaded here
-        device = wp.device_from_jax(get_jax_device())
-        module = wp.get_module(self.func.__module__)
-        module.load(device)
+        # # load the module
+        # # NOTE: if the target function uses kernels from different modules, they will not be loaded here
+        # device = wp.device_from_jax(get_jax_device())
+        # module = wp.get_module(self.func.__module__)
+        # module.load(device)
+        try:
+            gpus = [d for d in jax.local_devices() if getattr(d, "platform", "") == "gpu"]
+        except Exception:
+            gpus = []
+
+        modules_to_load = {wp.get_module(self.func.__module__)}
+        try:
+            closure_cells = getattr(self.func, "__closure__", None) or []
+            for cell in closure_cells:
+                try:
+                    val = cell.cell_contents
+                except Exception:
+                    continue
+                try:
+                    if isinstance(val, wp.context.Kernel):
+                        modules_to_load.add(val.module)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        if gpus:
+            for d in gpus:
+                dev = wp.device_from_jax(d)
+                for mod in modules_to_load:
+                    mod.load(dev)
+        else:
+            device = wp.device_from_jax(get_jax_device())
+            for mod in modules_to_load:
+                mod.load(device)
 
         # save call data to be retrieved by callback
         call_id = self.call_id
@@ -556,75 +587,106 @@ class FfiCallable:
 
             cuda_stream = get_stream_from_callframe(call_frame.contents)
 
+            # device = wp.get_device("cuda")
+            # print('DEVICE IS ', device)
+
+            # if str(device) not in self.loaded_devices:
+            #     module = wp.get_module(self.func.__module__)
+            #     module.load(device)
+            #     self.loaded_devices.add(str(device))
+
+
             if self.graph_mode == GraphMode.WARP:
                 # check if we already captured an identical call
                 ip = [inputs[i].contents.data for i in self.array_input_indices]
                 op = [outputs[i].contents.data for i in self.array_output_indices]
                 buffer_hash = hash((*ip, *op))
-                capture = call_desc.captures.get(buffer_hash)
 
-                # launch existing graph
-                if capture is not None:
-                    # NOTE: We use the native graph API to avoid overhead with obtaining Stream and Device objects in Python.
-                    # This code should match wp.capture_launch().
-                    graph = capture.graph
-                    if graph.graph_exec is None:
-                        g = ctypes.c_void_p()
-                        if not wp.context.runtime.core.wp_cuda_graph_create_exec(
-                            graph.device.context, cuda_stream, graph.graph, ctypes.byref(g)
-                        ):
-                            raise RuntimeError(f"Graph creation error: {wp.context.runtime.get_error_string()}")
-                        graph.graph_exec = g
+                try:
+                    gpus = [d for d in jax.local_devices() if getattr(d, "platform", "") == "gpu"]
+                except Exception:
+                    gpus = []
 
-                    if not wp.context.runtime.core.wp_cuda_graph_launch(graph.graph_exec, cuda_stream):
-                        raise RuntimeError(f"Graph launch error: {wp.context.runtime.get_error_string()}")
+                print('GPUS are', gpus)
 
-                    # early out
-                    return
+                for gpu in gpus:
+                    d = wp.device_from_jax(gpu)
 
-            device = wp.device_from_jax(get_jax_device())
-            stream = wp.Stream(device, cuda_stream=cuda_stream)
+                    capture_key = (str(d), buffer_hash)
+                    # capture_key = buffer_hash
+                    capture = call_desc.captures.get(capture_key)
+                    print("Running capture", capture_key)
 
-            # reconstruct the argument list
-            arg_list = []
+                    # launch existing graph
+                    if capture is not None:
+                        # NOTE: We use the native graph API to avoid overhead with obtaining Stream and Device objects in Python.
+                        # This code should match wp.capture_launch().
+                        graph = capture.graph
+                        if graph.graph_exec is None:
+                            g = ctypes.c_void_p()
+                            if not wp.context.runtime.core.wp_cuda_graph_create_exec(
+                                graph.device.context, cuda_stream, graph.graph, ctypes.byref(g)
+                            ):
+                                raise RuntimeError(f"Graph creation error: {wp.context.runtime.get_error_string()}")
+                            graph.graph_exec = g
+    
+                        if not wp.context.runtime.core.wp_cuda_graph_launch(graph.graph_exec, cuda_stream):
+                            raise RuntimeError(f"Graph launch error: {wp.context.runtime.get_error_string()}")
 
-            # input and in-out args
-            for i, arg in enumerate(self.input_args):
-                if arg.is_array:
-                    buffer = inputs[i].contents
+                # early out
+                return
+
+            try:
+                gpus = [d for d in jax.local_devices() if getattr(d, "platform", "") == "gpu"]
+            except Exception:
+                gpus = []
+            for gpu in gpus:
+                device = wp.device_from_jax(gpu)
+                # device = wp.device_from_jax(get_jax_device())
+                stream = wp.Stream(device, cuda_stream=cuda_stream)
+
+                # reconstruct the argument list
+                arg_list = []
+
+                # input and in-out args
+                for i, arg in enumerate(self.input_args):
+                    if arg.is_array:
+                        buffer = inputs[i].contents
+                        shape = buffer.dims[: buffer.rank - arg.dtype_ndim]
+                        arr = wp.array(ptr=buffer.data, dtype=arg.type.dtype, shape=shape, device=device)
+                        arg_list.append(arr)
+                    else:
+                        # scalar argument, get stashed value
+                        value = call_desc.static_inputs[arg.name]
+                        arg_list.append(value)
+
+                # pure output args (skip in-out FFI buffers)
+                for i, arg in enumerate(self.output_args):
+                    buffer = outputs[i + self.num_in_out].contents
                     shape = buffer.dims[: buffer.rank - arg.dtype_ndim]
                     arr = wp.array(ptr=buffer.data, dtype=arg.type.dtype, shape=shape, device=device)
                     arg_list.append(arr)
-                else:
-                    # scalar argument, get stashed value
-                    value = call_desc.static_inputs[arg.name]
-                    arg_list.append(value)
 
-            # pure output args (skip in-out FFI buffers)
-            for i, arg in enumerate(self.output_args):
-                buffer = outputs[i + self.num_in_out].contents
-                shape = buffer.dims[: buffer.rank - arg.dtype_ndim]
-                arr = wp.array(ptr=buffer.data, dtype=arg.type.dtype, shape=shape, device=device)
-                arg_list.append(arr)
-
-            # call the Python function with reconstructed arguments
-            with wp.ScopedStream(stream, sync_enter=False):
-                if stream.is_capturing:
-                    # capturing with JAX
-                    with wp.ScopedCapture(external=True) as capture:
+                # call the Python function with reconstructed arguments
+                with wp.ScopedStream(stream, sync_enter=False):
+                    if stream.is_capturing:
+                        # capturing with JAX
+                        with wp.ScopedCapture(external=True) as capture:
+                            self.func(*arg_list)
+                        # keep a reference to the capture object to prevent required modules getting unloaded
+                        call_desc.capture = capture
+                    elif self.graph_mode == GraphMode.WARP:
+                        # capturing with WARP
+                        with wp.ScopedCapture(device) as capture:
+                            self.func(*arg_list)
+                        wp.capture_launch(capture.graph)
+                        # keep a reference to the capture object and reuse it with same buffers
+                        capture_key = (str(device), buffer_hash)
+                        call_desc.captures[capture_key] = capture
+                        print("Done capturing", capture_key)
+                    else:
+                        # not capturing
                         self.func(*arg_list)
-                    # keep a reference to the capture object to prevent required modules getting unloaded
-                    call_desc.capture = capture
-                elif self.graph_mode == GraphMode.WARP:
-                    # capturing with WARP
-                    with wp.ScopedCapture() as capture:
-                        self.func(*arg_list)
-                    wp.capture_launch(capture.graph)
-                    # keep a reference to the capture object and reuse it with same buffers
-                    call_desc.captures[buffer_hash] = capture
-                else:
-                    # not capturing
-                    self.func(*arg_list)
 
         except Exception as e:
             print(traceback.format_exc())
