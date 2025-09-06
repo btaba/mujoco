@@ -510,7 +510,7 @@ class FfiCallable:
             # has_side_effect=True,  # force this function to execute even if outputs aren't used
         )
 
-        # load the module
+        # load the module on all devices - MAJOR HACK
         # NOTE: if the target function uses kernels from different modules, they will not be loaded here
         devices = [wp.device_from_jax(d) for d in jax.devices()]
         for device in devices:
@@ -550,7 +550,6 @@ class FfiCallable:
             #   call_id = int(attrs["call_id"])
             attr = ctypes.cast(call_frame.contents.attrs.attrs[0], ctypes.POINTER(XLA_FFI_Scalar)).contents
             call_id = ctypes.cast(attr.value, ctypes.POINTER(ctypes.c_int64)).contents.value
-            print('Call ID is ', call_id)
             # call_desc = self.call_descriptors[call_id]
 
             num_inputs = call_frame.contents.args.size
@@ -563,27 +562,8 @@ class FfiCallable:
             assert num_outputs == self.num_outputs
 
             cuda_stream = get_stream_from_callframe(call_frame.contents)
-            # device_ordinal = get_device_from_thread()
-            # device_ordinal = get_device_from_buffer_ptr(inputs[0].contents.data)
-            # device = wp.get_device(f"cuda:{device_ordinal}")
-            #with _STREAM_LOCK:
-            #    if cuda_stream in self.device_cache:
-            #        device, device_ordinal = self.device_cache[cuda_stream]
-            #        print(f"Got device stream cache: {device_ordinal}")
-            #    else:
-            #        device_ordinal = get_device_from_buffer_ptr(inputs[0].contents.data)  # get_device_from_thread()
-            #        device = wp.get_device(f"cuda:{device_ordinal}")
-            #        # stream = wp.Stream(device=device, cuda_stream=cuda_stream)
-            #        self.device_cache[cuda_stream] = (device, device_ordinal)
-            #        print(f"Populated device stream cache: {device_ordinal}")
-            with _STREAM_LOCK:
-                device_ordinal = get_device_from_buffer_ptr(inputs[0].contents.data)
-                device = wp.get_device(f"cuda:{device_ordinal}")
-                # if device_ordinal in self.device_cache:
-                #     device = self.device_cache[device_ordinal]
-                # else:
-                #     device = wp.get_device(f"cuda:{device_ordinal}")
-                #     self.device_cache[device_ordinal] = device
+            device_ordinal = get_device_from_buffer_ptr(inputs[0].contents.data)
+            device = wp.get_device(f"cuda:{device_ordinal}")
 
             call_desc = self.call_descriptors[(device_ordinal, call_id)]
 
@@ -593,7 +573,7 @@ class FfiCallable:
                 op = [outputs[i].contents.data for i in self.array_output_indices]
                 buffer_hash = hash((*ip, *op))
                 capture_key = (device_ordinal, buffer_hash)
-                # capture = call_desc.captures.get(capture_key)
+                # capture = call_desc.captures.get(capture_key)  # jax.pmap seems to nuke the call_desc?
                 with _STREAM_LOCK:
                     capture = _CAPTURES.get(capture_key)
                     print('Retrieved capture ', capture, 'on device ', device_ordinal)
