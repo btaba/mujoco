@@ -668,7 +668,6 @@ def get_device_from_buffer_ptr(data_ptr: int) -> int:
     cuPointerGetAttribute.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
     cuPointerGetAttribute.restype = int
 
-    # It's good practice to ensure the driver is initialized
     cuInit = cuda_driver.cuInit
     cuInit.argtypes = [ctypes.c_uint]
     if cuInit(0) != 0:
@@ -680,7 +679,7 @@ def get_device_from_buffer_ptr(data_ptr: int) -> int:
         data_ptr
     )
 
-    if result != 0: # 0 is CUDA_SUCCESS
+    if result != 0:
         raise RuntimeError(f"cuPointerGetAttribute failed with error code {result}")
 
     return device_ordinal_out.value
@@ -702,11 +701,9 @@ def get_device_from_thread() -> int:
     if cuInit(0) != 0:
         raise RuntimeError("cuInit failed")
 
-    # JAX should have set the correct device/context for this thread
-    # before calling our callback.
     result = cuCtxGetDevice(ctypes.byref(device_id))
     if result != 0:
-        raise RuntimeError(f"cuCtxGetDevice failed with error code {result}. This may mean no context is active on the thread.")
+        raise RuntimeError(f"cuCtxGetDevice failed with error code {result}.")
 
     return device_id.value
 
