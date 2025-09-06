@@ -656,7 +656,7 @@ class FfiCallable:
 _CAPTURES = {}
 _STREAM_LOCK = threading.Lock()
 
-CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL = 9
+CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL = 9  # MAJOR HACK
 def get_device_from_buffer_ptr(data_ptr: int) -> int:
     """Gets the CUDA device ordinal from a device memory pointer."""
 
