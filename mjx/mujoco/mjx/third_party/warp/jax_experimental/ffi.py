@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
 import ctypes
 import threading
 import traceback
@@ -542,6 +543,7 @@ class FfiCallable:
             #   call_id = int(attrs["call_id"])
             attr = ctypes.cast(call_frame.contents.attrs.attrs[0], ctypes.POINTER(XLA_FFI_Scalar)).contents
             call_id = ctypes.cast(attr.value, ctypes.POINTER(ctypes.c_int64)).contents.value
+            print('N call descriptors', len(self.call_descriptors))
             call_desc = self.call_descriptors[call_id]
 
             num_inputs = call_frame.contents.args.size
@@ -635,8 +637,8 @@ class FfiCallable:
 
 
 # Holders for the custom callbacks to keep them alive.
-_FFI_CALLABLE_REGISTRY: dict[str, FfiCallable] = {}
-_FFI_KERNEL_REGISTRY: dict[str, FfiKernel] = {}
+_FFI_CALLABLE_REGISTRY: collections.OrderedDict[str, FfiCallable] = collections.OrderedDict()
+_FFI_KERNEL_REGISTRY: collections.OrderedDict[str, FfiKernel] = collections.OrderedDict()
 _FFI_REGISTRY_LOCK = threading.Lock()
 
 
@@ -747,6 +749,11 @@ def jax_callable(
         if key not in _FFI_CALLABLE_REGISTRY:
             new_callable = FfiCallable(func, num_outputs, graph_mode, vmap_method, output_dims, in_out_argnames)
             _FFI_CALLABLE_REGISTRY[key] = new_callable
+        
+        if len(_FFI_CALLABLE_REGISTRY) >= 32:
+            _FFI_CALLABLE_REGISTRY.popitem(last=False)
+
+    print('LEN of _FFI_CALLABLE_REGISTRY', len(_FFI_CALLABLE_REGISTRY))
 
     return _FFI_CALLABLE_REGISTRY[key]
 
