@@ -1,0 +1,78 @@
+diff --git a/warp/jax_experimental/xla_ffi.py b/warp/jax_experimental/xla_ffi.py
+index 8f33030b..70f847df 100644
+--- a/warp/jax_experimental/xla_ffi.py
++++ b/warp/jax_experimental/xla_ffi.py
+@@ -376,8 +376,24 @@ class XLA_FFI_Stream_Get_Args(ctypes.Structure):
+     )  # // out
+ 
+ 
+-XLA_FFI_Stream_Get = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.POINTER(XLA_FFI_Stream_Get_Args))
++# struct XLA_FFI_DeviceOrdinal_Get_Args {
++#   size_t struct_size;
++#   XLA_FFI_Extension_Base* extension_start;
+ 
++#   XLA_FFI_ExecutionContext* ctx;
++#   int32_t device_ordinal;  // out
++# };
++class XLA_FFI_DeviceOrdinal_Get_Args(ctypes.Structure):
++    _fields_ = (
++        ("struct_size", ctypes.c_size_t),
++        ("extension_start", ctypes.POINTER(XLA_FFI_Extension_Base)),
++        ("ctx", ctypes.c_void_p),  # XLA_FFI_ExecutionContext*
++        ("device_ordinal", ctypes.c_int),
++    )  # // out
++
++
++XLA_FFI_Stream_Get = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.POINTER(XLA_FFI_Stream_Get_Args))
++XLA_FFI_DeviceOrdinal_Get = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.POINTER(XLA_FFI_DeviceOrdinal_Get_Args))
+ 
+ # struct XLA_FFI_Api {
+ #   size_t struct_size;
+@@ -402,6 +418,8 @@ XLA_FFI_Stream_Get = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.POINTER(XLA_FFI_St
+ #   _XLA_FFI_API_STRUCT_FIELD(XLA_FFI_Future_Create);
+ #   _XLA_FFI_API_STRUCT_FIELD(XLA_FFI_Future_SetAvailable);
+ #   _XLA_FFI_API_STRUCT_FIELD(XLA_FFI_Future_SetError);
++#   _XLA_FFI_API_STRUCT_FIELD(XLA_FFI_RunId_Get);
++#   _XLA_FFI_API_STRUCT_FIELD(XLA_FFI_DeviceOrdinal_Get);
+ # };
+ class XLA_FFI_Api(ctypes.Structure):
+     _fields_ = (
+@@ -425,6 +443,8 @@ class XLA_FFI_Api(ctypes.Structure):
+         ("XLA_FFI_Future_Create", ctypes.c_void_p),  # XLA_FFI_Future_Create
+         ("XLA_FFI_Future_SetAvailable", ctypes.c_void_p),  # XLA_FFI_Future_SetAvailable
+         ("XLA_FFI_Future_SetError", ctypes.c_void_p),  # XLA_FFI_Future_SetError
++        ("XLA_FFI_RunId_Get", ctypes.c_void_p),  # XLA_FFI_RunId_Get
++        ("XLA_FFI_DeviceOrdinal_Get", XLA_FFI_DeviceOrdinal_Get),  # XLA_FFI_DeviceOrdinal_Get
+     )
+ 
+ 
+@@ -560,6 +580,16 @@ def get_stream_from_callframe(call_frame):
+     # TODO check result
+     return get_stream_args.stream
+ 
++# Extract device ordinal from XLA_FFI_CallFrame.
++def get_device_ordinal_from_callframe(call_frame):
++    api = call_frame.api
++    get_device_ordinal_args = XLA_FFI_DeviceOrdinal_Get_Args(
++        ctypes.sizeof(XLA_FFI_DeviceOrdinal_Get_Args), ctypes.POINTER(XLA_FFI_Extension_Base)(), call_frame.ctx, -1
++    )
++    api.contents.XLA_FFI_DeviceOrdinal_Get(get_device_ordinal_args)
++    # TODO check result
++    return get_device_ordinal_args.device_ordinal
++
+ 
+ _dtype_from_ffi = {
+     XLA_FFI_DataType.S8: wp.int8,
+@@ -588,10 +618,12 @@ def jax_dtype_from_ffi(ffi_dtype):
+ class ExecutionContext:
+     stage: XLA_FFI_ExecutionStage
+     stream: int
++    device_ordinal: int
+ 
+     def __init__(self, callframe: XLA_FFI_CallFrame):
+         self.stage = XLA_FFI_ExecutionStage(callframe.stage)
+         self.stream = get_stream_from_callframe(callframe)
++        self.device_ordinal = get_device_ordinal_from_callframe(callframe)
+ 
+ 
+ class FfiBuffer:

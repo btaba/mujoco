@@ -455,6 +455,7 @@ def _put_model_warp(
 
   with wp.ScopedDevice('cpu'):  # pylint: disable=undefined-variable
     mw = mjwp.put_model(m)  # pylint: disable=undefined-variable
+    mw.opt.graph_conditional = False
 
   fields = {f.name for f in types.Model.fields() if f.name != '_impl'}
   fields = {f: getattr(m, f) for f in fields}

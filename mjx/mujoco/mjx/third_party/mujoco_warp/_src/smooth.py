@@ -93,6 +93,9 @@ def _kinematics_level(
   jntnum = body_jntnum[bodyid]
   qpos = qpos_in[worldid]
 
+  if worldid == 0:
+    wp.printf('device worldid %d %f\n', worldid, qpos[0])
+
   if jntnum == 0:
     # no joints - apply fixed translation and rotation relative to parent
     pid = body_parentid[bodyid]

@@ -1,0 +1,46 @@
+diff --git a/warp/jax_experimental/ffi.py b/warp/jax_experimental/ffi.py
+index cdc1aad0..9732458a 100644
+--- a/warp/jax_experimental/ffi.py
++++ b/warp/jax_experimental/ffi.py
+@@ -296,6 +296,8 @@ class FfiCallDesc:
+     def __init__(self, static_inputs):
+         self.static_inputs = static_inputs
+ 
++import threading
++warp_context_lock = threading.Lock()
+ 
+ class FfiCallable:
+     def __init__(self, func, num_outputs, graph_compatible, vmap_method, output_dims):
+@@ -462,7 +464,8 @@ class FfiCallable:
+             assert num_inputs == self.num_inputs
+             assert num_outputs == self.num_outputs
+ 
+-            device = wp.device_from_jax(get_jax_device())
++            device_ordinal = get_device_ordinal_from_callframe(call_frame.contents)
++            device = wp.get_cuda_device(device_ordinal)
+             cuda_stream = get_stream_from_callframe(call_frame.contents)
+             stream = wp.Stream(device, cuda_stream=cuda_stream)
+ 
+@@ -491,14 +494,15 @@ class FfiCallable:
+                 arg_list.append(arr)
+ 
+             # call the Python function with reconstructed arguments
+-            with wp.ScopedStream(stream, sync_enter=False):
+-                if stream.is_capturing:
+-                    with wp.ScopedCapture(stream=stream, external=True) as capture:
++            with warp_context_lock:
++                with wp.ScopedStream(stream, sync_enter=False):
++                    if stream.is_capturing:
++                        with wp.ScopedCapture(stream=stream, external=True) as capture:
++                            self.func(*arg_list)
++                        # keep a reference to the capture object to prevent required modules getting unloaded
++                        call_desc.capture = capture
++                    else:
+                         self.func(*arg_list)
+-                    # keep a reference to the capture object to prevent required modules getting unloaded
+-                    call_desc.capture = capture
+-                else:
+-                    self.func(*arg_list)
+ 
+         except Exception as e:
+             print(traceback.format_exc())
