@@ -639,8 +639,8 @@ class FfiCallable:
 
 
 # Holders for the custom callbacks to keep them alive.
-_FFI_CALLABLE_REGISTRY: collections.OrderedDict[str, FfiCallable] = collections.OrderedDict()
-_FFI_KERNEL_REGISTRY: collections.OrderedDict[str, FfiKernel] = collections.OrderedDict()
+_FFI_CALLABLE_REGISTRY: dict[str, FfiCallable] = {}
+_FFI_KERNEL_REGISTRY: dict[str, FfiKernel] = {}
 _FFI_REGISTRY_LOCK = threading.Lock()
 _MAX_FFI_CALLABLE_CAPTURES = 32
 
