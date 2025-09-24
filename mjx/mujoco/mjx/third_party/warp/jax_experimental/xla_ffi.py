@@ -376,10 +376,12 @@ class XLA_FFI_Stream_Get_Args(ctypes.Structure):
     )  # // out
 
 
-# struct XLA_FFI_DeviceOrdinal_Get_Args {
+XLA_FFI_Stream_Get = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.POINTER(XLA_FFI_Stream_Get_Args))
+
+
+# struct XLA_FFI_DeviceOrdinal_Get {
 #   size_t struct_size;
 #   XLA_FFI_Extension_Base* extension_start;
-
 #   XLA_FFI_ExecutionContext* ctx;
 #   int32_t device_ordinal;  // out
 # };
@@ -388,12 +390,12 @@ class XLA_FFI_DeviceOrdinal_Get_Args(ctypes.Structure):
         ("struct_size", ctypes.c_size_t),
         ("extension_start", ctypes.POINTER(XLA_FFI_Extension_Base)),
         ("ctx", ctypes.c_void_p),  # XLA_FFI_ExecutionContext*
-        ("device_ordinal", ctypes.c_int),
+        ("device_ordinal", ctypes.c_int32),
     )  # // out
 
 
-XLA_FFI_Stream_Get = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.POINTER(XLA_FFI_Stream_Get_Args))
 XLA_FFI_DeviceOrdinal_Get = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.POINTER(XLA_FFI_DeviceOrdinal_Get_Args))
+
 
 # struct XLA_FFI_Api {
 #   size_t struct_size;
@@ -443,6 +445,7 @@ class XLA_FFI_Api(ctypes.Structure):
         ("XLA_FFI_Future_Create", ctypes.c_void_p),  # XLA_FFI_Future_Create
         ("XLA_FFI_Future_SetAvailable", ctypes.c_void_p),  # XLA_FFI_Future_SetAvailable
         ("XLA_FFI_Future_SetError", ctypes.c_void_p),  # XLA_FFI_Future_SetError
+        # TODO(chaserileyroberts): Make this return the correct value and not a c_void_p.
         ("XLA_FFI_RunId_Get", ctypes.c_void_p),  # XLA_FFI_RunId_Get
         ("XLA_FFI_DeviceOrdinal_Get", XLA_FFI_DeviceOrdinal_Get),  # XLA_FFI_DeviceOrdinal_Get
     )
@@ -495,16 +498,25 @@ _xla_data_type_to_constructor = {
     XLA_FFI_DataType.C64: jnp.complex64,
     XLA_FFI_DataType.C128: jnp.complex128,
     # XLA_FFI_DataType.TOKEN
-    XLA_FFI_DataType.F8E5M2: jnp.float8_e5m2,
-    XLA_FFI_DataType.F8E3M4: jnp.float8_e3m4,
-    XLA_FFI_DataType.F8E4M3: jnp.float8_e4m3,
-    XLA_FFI_DataType.F8E4M3FN: jnp.float8_e4m3fn,
-    XLA_FFI_DataType.F8E4M3B11FNUZ: jnp.float8_e4m3b11fnuz,
-    XLA_FFI_DataType.F8E5M2FNUZ: jnp.float8_e5m2fnuz,
-    XLA_FFI_DataType.F8E4M3FNUZ: jnp.float8_e4m3fnuz,
     # XLA_FFI_DataType.F4E2M1FN: jnp.float4_e2m1fn.dtype,
     # XLA_FFI_DataType.F8E8M0FNU: jnp.float8_e8m0fnu.dtype,
 }
+
+# newer types not supported by older versions
+if hasattr(jnp, "float8_e5m2"):
+    _xla_data_type_to_constructor[XLA_FFI_DataType.F8E5M2] = jnp.float8_e5m2
+if hasattr(jnp, "float8_e3m4"):
+    _xla_data_type_to_constructor[XLA_FFI_DataType.F8E3M4] = jnp.float8_e3m4
+if hasattr(jnp, "float8_e4m3"):
+    _xla_data_type_to_constructor[XLA_FFI_DataType.F8E4M3] = jnp.float8_e4m3
+if hasattr(jnp, "float8_e4m3fn"):
+    _xla_data_type_to_constructor[XLA_FFI_DataType.F8E4M3FN] = jnp.float8_e4m3fn
+if hasattr(jnp, "float8_e4m3b11fnuz"):
+    _xla_data_type_to_constructor[XLA_FFI_DataType.F8E4M3B11FNUZ] = jnp.float8_e4m3b11fnuz
+if hasattr(jnp, "float8_e5m2fnuz"):
+    _xla_data_type_to_constructor[XLA_FFI_DataType.F8E5M2FNUZ] = jnp.float8_e5m2fnuz
+if hasattr(jnp, "float8_e4m3fnuz"):
+    _xla_data_type_to_constructor[XLA_FFI_DataType.F8E4M3FNUZ] = jnp.float8_e4m3fnuz
 
 
 ########################################################################
@@ -580,15 +592,14 @@ def get_stream_from_callframe(call_frame):
     # TODO check result
     return get_stream_args.stream
 
-# Extract device ordinal from XLA_FFI_CallFrame.
+
 def get_device_ordinal_from_callframe(call_frame):
     api = call_frame.api
-    get_device_ordinal_args = XLA_FFI_DeviceOrdinal_Get_Args(
-        ctypes.sizeof(XLA_FFI_DeviceOrdinal_Get_Args), ctypes.POINTER(XLA_FFI_Extension_Base)(), call_frame.ctx, -1
+    get_device_args = XLA_FFI_DeviceOrdinal_Get_Args(
+        ctypes.sizeof(XLA_FFI_DeviceOrdinal_Get_Args), ctypes.POINTER(XLA_FFI_Extension_Base)(), call_frame.ctx, 0
     )
-    api.contents.XLA_FFI_DeviceOrdinal_Get(get_device_ordinal_args)
-    # TODO check result
-    return get_device_ordinal_args.device_ordinal
+    api.contents.XLA_FFI_DeviceOrdinal_Get(get_device_args)
+    return get_device_args.device_ordinal
 
 
 _dtype_from_ffi = {
@@ -618,12 +629,10 @@ def jax_dtype_from_ffi(ffi_dtype):
 class ExecutionContext:
     stage: XLA_FFI_ExecutionStage
     stream: int
-    device_ordinal: int
 
     def __init__(self, callframe: XLA_FFI_CallFrame):
         self.stage = XLA_FFI_ExecutionStage(callframe.stage)
         self.stream = get_stream_from_callframe(callframe)
-        self.device_ordinal = get_device_ordinal_from_callframe(callframe)
 
 
 class FfiBuffer:
