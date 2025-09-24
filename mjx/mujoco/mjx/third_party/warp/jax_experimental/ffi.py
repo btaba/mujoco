@@ -339,7 +339,7 @@ class FfiKernel:
 class FfiCallDesc:
     def __init__(self, static_inputs):
         self.static_inputs = static_inputs
-        self.captures = {}
+        self.captures = collections.OrderedDict()
 
 
 class FfiCallable:
@@ -543,7 +543,6 @@ class FfiCallable:
             #   call_id = int(attrs["call_id"])
             attr = ctypes.cast(call_frame.contents.attrs.attrs[0], ctypes.POINTER(XLA_FFI_Scalar)).contents
             call_id = ctypes.cast(attr.value, ctypes.POINTER(ctypes.c_int64)).contents.value
-            print('N call descriptors', len(self.call_descriptors))
             call_desc = self.call_descriptors[call_id]
 
             num_inputs = call_frame.contents.args.size
@@ -556,6 +555,7 @@ class FfiCallable:
             assert num_outputs == self.num_outputs
 
             cuda_stream = get_stream_from_callframe(call_frame.contents)
+            print('N captures', len(call_desc.captures))
 
             if self.graph_mode == GraphMode.WARP:
                 # check if we already captured an identical call
@@ -623,6 +623,8 @@ class FfiCallable:
                     wp.capture_launch(capture.graph)
                     # keep a reference to the capture object and reuse it with same buffers
                     call_desc.captures[buffer_hash] = capture
+                    if len(call_desc.captures) > _MAX_FFI_CALLABLE_CAPTURES:
+                        call_desc.captures.popitem(last=False)
                 else:
                     # not capturing
                     self.func(*arg_list)
@@ -640,7 +642,7 @@ class FfiCallable:
 _FFI_CALLABLE_REGISTRY: collections.OrderedDict[str, FfiCallable] = collections.OrderedDict()
 _FFI_KERNEL_REGISTRY: collections.OrderedDict[str, FfiKernel] = collections.OrderedDict()
 _FFI_REGISTRY_LOCK = threading.Lock()
-
+_MAX_FFI_CALLABLE_CAPTURES = 32
 
 def jax_kernel(
     kernel, num_outputs=1, vmap_method="broadcast_all", launch_dims=None, output_dims=None, in_out_argnames=None
@@ -749,11 +751,6 @@ def jax_callable(
         if key not in _FFI_CALLABLE_REGISTRY:
             new_callable = FfiCallable(func, num_outputs, graph_mode, vmap_method, output_dims, in_out_argnames)
             _FFI_CALLABLE_REGISTRY[key] = new_callable
-        
-        if len(_FFI_CALLABLE_REGISTRY) >= 32:
-            _FFI_CALLABLE_REGISTRY.popitem(last=False)
-
-    print('LEN of _FFI_CALLABLE_REGISTRY', len(_FFI_CALLABLE_REGISTRY))
 
     return _FFI_CALLABLE_REGISTRY[key]
 
