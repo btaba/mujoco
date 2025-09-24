@@ -582,6 +582,8 @@ class FfiCallable:
 
                     # early out
                     return
+            # elif self.graph_mode == GraphMode.JAX and hasattr(call_desc, 'capture'):
+            ## re-use the XLA-CUDA graph?
 
             device = wp.device_from_jax(get_jax_device())
             stream = wp.Stream(device, cuda_stream=cuda_stream)
