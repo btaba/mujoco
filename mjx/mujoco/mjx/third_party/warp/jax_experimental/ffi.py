@@ -377,6 +377,7 @@ class FfiCallable:
 
         # parse type annotations
         self.args = []
+        self.in_out_arg_idx = []
         arg_idx = 0
         for arg_name, arg_type in argspec.annotations.items():
             if arg_name == "return":
@@ -564,10 +565,71 @@ class FfiCallable:
                 buffer_hash = hash((*ip, *op))
                 capture = call_desc.captures.get(buffer_hash)
 
-                # launch existing graph
-                if capture is not None:
-                    # NOTE: We use the native graph API to avoid overhead with obtaining Stream and Device objects in Python.
-                    # This code should match wp.capture_launch().
+                # # launch existing graph
+                # if capture is not None:
+                #     # NOTE: We use the native graph API to avoid overhead with obtaining Stream and Device objects in Python.
+                #     # This code should match wp.capture_launch().
+                #     graph = capture.graph
+                #     if graph.graph_exec is None:
+                #         g = ctypes.c_void_p()
+                #         if not wp.context.runtime.core.wp_cuda_graph_create_exec(
+                #             graph.device.context, cuda_stream, graph.graph, ctypes.byref(g)
+                #         ):
+                #             raise RuntimeError(f"Graph creation error: {wp.context.runtime.get_error_string()}")
+                #         graph.graph_exec = g
+
+                #     if not wp.context.runtime.core.wp_cuda_graph_launch(graph.graph_exec, cuda_stream):
+                #         raise RuntimeError(f"Graph launch error: {wp.context.runtime.get_error_string()}")
+
+                #     # early out
+                #     return
+                if capture is None and hasattr(call_desc, 'capture'):
+                    print('Re-use first graph capture, copy memory in/out.')
+                    # launch existing graph by copying into shadow buffers
+                    capture = call_desc.capture
+
+                    # reconstruct the argument list
+                    device = wp.device_from_jax(get_jax_device())
+                    stream = wp.Stream(device, cuda_stream=cuda_stream)
+                    arg_list = []
+                    for i, arg in enumerate(self.input_args):
+                        if arg.is_array:
+                            buffer = inputs[i].contents
+                            shape = buffer.dims[: buffer.rank - arg.dtype_ndim]
+                            arr = wp.array(ptr=buffer.data, dtype=arg.type.dtype, shape=shape, device=device)
+                            arg_list.append(arr)
+                        else:
+                            value = call_desc.static_inputs[arg.name]
+                            arg_list.append(value)
+                    for i, arg in enumerate(self.output_args):
+                        buffer = outputs[i + self.num_in_out].contents
+                        shape = buffer.dims[: buffer.rank - arg.dtype_ndim]
+                        arr = wp.array(ptr=buffer.data, dtype=arg.type.dtype, shape=shape, device=device)
+                        arg_list.append(arr)
+
+                    # import IPython; IPython.embed(user_ns=dict(globals(), **locals()))
+
+                    in_out_arg_list = []  # assume only in-out for now
+                    assert len(self.output_args) == 0
+                    for i, arg in enumerate(self.input_args[self.num_inputs - self.num_in_out:]):
+                        buffer = outputs[i].contents
+                        shape = buffer.dims[: buffer.rank - arg.dtype_ndim]
+                        arr = wp.array(ptr=buffer.data, dtype=arg.type.dtype, shape=shape, device=device)
+                        in_out_arg_list.append(arr)
+
+                    device = wp.device_from_jax(get_jax_device())
+                    stream = wp.Stream(device, cuda_stream=cuda_stream)
+
+                    # Copy into shadow buffer
+                    with wp.ScopedStream(stream, sync_enter=False):
+                        n_in = len(self.input_args)
+                        for arr, shadow_buffer in zip(arg_list[:n_in], call_desc.shadow_buffers[:n_in]):
+                            if not isinstance(shadow_buffer, wp.array):
+                                continue
+                            wp.copy(shadow_buffer, arr)
+                        wp.synchronize()
+
+                    # Launch graph
                     graph = capture.graph
                     if graph.graph_exec is None:
                         g = ctypes.c_void_p()
@@ -576,12 +638,22 @@ class FfiCallable:
                         ):
                             raise RuntimeError(f"Graph creation error: {wp.context.runtime.get_error_string()}")
                         graph.graph_exec = g
-
                     if not wp.context.runtime.core.wp_cuda_graph_launch(graph.graph_exec, cuda_stream):
                         raise RuntimeError(f"Graph launch error: {wp.context.runtime.get_error_string()}")
 
-                    # early out
+                    # Copy back
+                    with wp.ScopedStream(stream, sync_enter=False):
+                        wp.synchronize()
+                        in_out_shadow_buffers = call_desc.shadow_buffers[self.num_inputs - self.num_in_out:]
+                        for i, (arr, shadow_buffer) in enumerate(zip(in_out_arg_list, in_out_shadow_buffers)):
+                            if not isinstance(shadow_buffer, wp.array):
+                                continue
+                            wp.copy(arr, shadow_buffer)
+                        wp.synchronize()
+
                     return
+                    # early out
+
             # elif self.graph_mode == GraphMode.JAX and hasattr(call_desc, 'capture'):
             ## re-use the XLA-CUDA graph?
 
@@ -610,23 +682,43 @@ class FfiCallable:
                 arr = wp.array(ptr=buffer.data, dtype=arg.type.dtype, shape=shape, device=device)
                 arg_list.append(arr)
 
+            # Create Warp buffers.
+            call_desc.shadow_buffers = [None] * len(arg_list)
+            for i, a in enumerate(arg_list):
+                if isinstance(a, wp.array):
+                    call_desc.shadow_buffers[i] = wp.empty(shape=a.shape, dtype=a.dtype, device=device)
+                else:
+                    call_desc.shadow_buffers[i] = a
+            for arr, shadow_buffer in zip(arg_list, call_desc.shadow_buffers):
+                if not isinstance(shadow_buffer, wp.array):
+                    continue
+                wp.copy(shadow_buffer, arr)
+            wp.synchronize()
+
             # call the Python function with reconstructed arguments
             with wp.ScopedStream(stream, sync_enter=False):
-                if stream.is_capturing:
-                    # capturing with JAX
-                    with wp.ScopedCapture(external=True) as capture:
-                        self.func(*arg_list)
-                    # keep a reference to the capture object to prevent required modules getting unloaded
-                    call_desc.capture = capture
-                elif self.graph_mode == GraphMode.WARP:
+                # if stream.is_capturing:
+                #     # capturing with JAX
+                #     with wp.ScopedCapture(external=True) as capture:
+                #         self.func(*arg_list)
+                #     # keep a reference to the capture object to prevent required modules getting unloaded
+                #     call_desc.capture = capture
+                if self.graph_mode == GraphMode.WARP:
                     # capturing with WARP
                     with wp.ScopedCapture() as capture:
-                        self.func(*arg_list)
+                        self.func(*call_desc.shadow_buffers)
                     wp.capture_launch(capture.graph)
                     # keep a reference to the capture object and reuse it with same buffers
-                    call_desc.captures[buffer_hash] = capture
+                    # call_desc.captures[buffer_hash] = capture
+                    call_desc.capture = capture
                     if len(call_desc.captures) > _MAX_FFI_CALLABLE_CAPTURES:
                         call_desc.captures.popitem(last=False)
+
+                    for arr, shadow_buffer in zip(arg_list[self.num_inputs - self.num_in_out:], call_desc.shadow_buffers[self.num_inputs - self.num_in_out:]):
+                        if not isinstance(shadow_buffer, wp.array):
+                            continue
+                        wp.copy(arr, shadow_buffer)
+
                 else:
                     # not capturing
                     self.func(*arg_list)
