@@ -24,6 +24,40 @@ from mujoco.mjx._src import dataclasses as mjx_dataclasses
 import numpy as np
 PyTreeNode = mjx_dataclasses.PyTreeNode
 
+
+@dataclasses.dataclass(frozen=True)
+@tree_util.register_pytree_node_class
+class RenderOptions:
+  """Render options.
+
+  Attributes:
+    render_rgb: whether to render rgb image
+    render_depth: whether to render depth image
+    use_textures: whether to use textures
+    use_shadows: whether to use shadows
+    width: width of the rendered image
+    height: height of the rendered image
+    fov_rad: field of view in radians
+  """
+
+  fov_rad: float
+  height: int
+  render_depth: bool
+  render_rgb: bool
+  use_shadows: bool
+  use_textures: bool
+  width: int
+
+  def tree_flatten(self):
+    children = list((getattr(self, k) for k in self.__dataclass_fields__))
+    return (children, None)
+
+  @classmethod
+  def tree_unflatten(cls, aux_data, children):
+    del aux_data
+    return cls(*children)
+
+
 @dataclasses.dataclass(frozen=True)
 @tree_util.register_pytree_node_class
 class TileSet:
@@ -88,10 +122,9 @@ class OptionWarp(PyTreeNode):
   """Derived fields from Option."""
   broadphase: int
   broadphase_filter: int
+  ccd_iterations: int
   ccd_tolerance: jax.Array
   contact_sensor_maxmatch: int
-  epa_iterations: int
-  gjk_iterations: int
   graph_conditional: bool
   has_fluid: bool
   is_sparse: bool
@@ -107,15 +140,17 @@ class ModelWarp(PyTreeNode):
   M_colind: np.ndarray
   M_rowadr: np.ndarray
   M_rownnz: np.ndarray
-  actuator_affine_bias_gain: bool
   actuator_moment_tiles_nu: Tuple[TileSet, ...]
   actuator_moment_tiles_nv: Tuple[TileSet, ...]
   actuator_trntype_body_adr: np.ndarray
   block_dim: BlockDim
   body_tree: Tuple[np.ndarray, ...]
+  bvh_ngeom: int
+  collision_sensor_adr: np.ndarray
   condim_max: int
   dof_tri_col: np.ndarray
   dof_tri_row: np.ndarray
+  enabled_geom_ids: np.ndarray
   eq_connect_adr: np.ndarray
   eq_jnt_adr: np.ndarray
   eq_ten_adr: np.ndarray
@@ -144,6 +179,8 @@ class ModelWarp(PyTreeNode):
   light_targetbodyid: np.ndarray
   mapM2M: np.ndarray
   mat_texrepeat: jax.Array
+  mesh_bounds_size: np.ndarray
+  mesh_bvh_ids: np.ndarray
   mesh_polyadr: np.ndarray
   mesh_polymap: np.ndarray
   mesh_polymapadr: np.ndarray
@@ -153,6 +190,8 @@ class ModelWarp(PyTreeNode):
   mesh_polyvert: np.ndarray
   mesh_polyvertadr: np.ndarray
   mesh_polyvertnum: np.ndarray
+  mesh_texcoord_num: np.ndarray
+  mesh_texcoord_offsets: np.ndarray
   mocap_bodyid: np.ndarray
   nflex: int
   nflexedge: int
@@ -181,6 +220,7 @@ class ModelWarp(PyTreeNode):
   qM_mulm_j: np.ndarray
   qM_tiles: Tuple[TileSet, ...]
   rangefinder_sensor_adr: np.ndarray
+  render_opt: RenderOptions
   sensor_acc_adr: np.ndarray
   sensor_adr_to_contact_adr: np.ndarray
   sensor_contact_adr: np.ndarray
@@ -221,6 +261,7 @@ class DataWarp(PyTreeNode):
   actuator_moment: jax.Array
   actuator_trntype_body_ncon: jax.Array
   actuator_velocity: jax.Array
+  bvh_id: int
   cacc: jax.Array
   cdof: jax.Array
   cdof_dot: jax.Array
@@ -243,6 +284,7 @@ class DataWarp(PyTreeNode):
   contact__solreffriction: jax.Array
   contact__worldid: jax.Array
   crb: jax.Array
+  depth: jax.Array
   efc__D: jax.Array
   efc__J: jax.Array
   efc__Jaref: jax.Array
@@ -295,9 +337,12 @@ class DataWarp(PyTreeNode):
   flexvert_xpos: jax.Array
   fluid_applied: jax.Array
   geom_skip: jax.Array
+  group_roots: jax.Array
+  groups: jax.Array
   inverse_mul_m_skip: jax.Array
   light_xdir: jax.Array
   light_xpos: jax.Array
+  lowers: jax.Array
   multiccd_clipped: jax.Array
   multiccd_endvert: jax.Array
   multiccd_face1: jax.Array
@@ -323,6 +368,7 @@ class DataWarp(PyTreeNode):
   nl: jax.Array
   nsolving: jax.Array
   nworld: int
+  pixels: jax.Array
   qLD: jax.Array
   qLD_integration: jax.Array
   qLDiagInv: jax.Array
@@ -366,11 +412,13 @@ class DataWarp(PyTreeNode):
   ten_velocity: jax.Array
   ten_wrapadr: jax.Array
   ten_wrapnum: jax.Array
+  uppers: jax.Array
   wrap_geom_xpos: jax.Array
   wrap_obj: jax.Array
   wrap_xpos: jax.Array
   shape = property(lambda self: self.cacc.shape)
 DATA_NON_VMAP = {
+    'bvh_id',
     'collision_pair',
     'collision_pairid',
     'collision_worldid',
@@ -454,6 +502,7 @@ _NDIM = {
         'actuator_moment': 3,
         'actuator_trntype_body_ncon': 2,
         'actuator_velocity': 2,
+        'bvh_id': 0,
         'cacc': 3,
         'cam_xmat': 4,
         'cam_xpos': 3,
@@ -480,6 +529,7 @@ _NDIM = {
         'crb': 3,
         'ctrl': 2,
         'cvel': 3,
+        'depth': 3,
         'efc__D': 2,
         'efc__J': 3,
         'efc__Jaref': 2,
@@ -535,9 +585,12 @@ _NDIM = {
         'geom_skip': 1,
         'geom_xmat': 4,
         'geom_xpos': 3,
+        'group_roots': 1,
+        'groups': 1,
         'inverse_mul_m_skip': 1,
         'light_xdir': 3,
         'light_xpos': 3,
+        'lowers': 2,
         'mocap_pos': 3,
         'mocap_quat': 3,
         'multiccd_clipped': 3,
@@ -565,6 +618,7 @@ _NDIM = {
         'nl': 1,
         'nsolving': 1,
         'nworld': 0,
+        'pixels': 4,
         'qLD': 3,
         'qLD_integration': 3,
         'qLDiagInv': 2,
@@ -628,6 +682,7 @@ _NDIM = {
         'ten_wrapadr': 2,
         'ten_wrapnum': 2,
         'time': 1,
+        'uppers': 2,
         'wrap_geom_xpos': 3,
         'wrap_obj': 3,
         'wrap_xpos': 3,
@@ -650,7 +705,6 @@ _NDIM = {
         'actuator_actlimited': 1,
         'actuator_actnum': 1,
         'actuator_actrange': 3,
-        'actuator_affine_bias_gain': 0,
         'actuator_biasprm': 3,
         'actuator_biastype': 1,
         'actuator_cranklength': 1,
@@ -705,6 +759,7 @@ _NDIM = {
         'body_subtreemass': 2,
         'body_tree': -1,
         'body_weldid': 1,
+        'bvh_ngeom': 0,
         'cam_bodyid': 1,
         'cam_fovy': 1,
         'cam_intrinsic': 2,
@@ -717,6 +772,7 @@ _NDIM = {
         'cam_resolution': 2,
         'cam_sensorsize': 2,
         'cam_targetbodyid': 1,
+        'collision_sensor_adr': 1,
         'condim_max': 0,
         'dof_Madr': 1,
         'dof_armature': 2,
@@ -730,6 +786,7 @@ _NDIM = {
         'dof_solref': 3,
         'dof_tri_col': 1,
         'dof_tri_row': 1,
+        'enabled_geom_ids': 1,
         'eq_active0': 1,
         'eq_connect_adr': 1,
         'eq_data': 3,
@@ -818,6 +875,8 @@ _NDIM = {
         'mat_rgba': 3,
         'mat_texid': 3,
         'mat_texrepeat': 3,
+        'mesh_bounds_size': 2,
+        'mesh_bvh_ids': 1,
         'mesh_face': 2,
         'mesh_faceadr': 1,
         'mesh_graph': 1,
@@ -834,6 +893,9 @@ _NDIM = {
         'mesh_polyvertadr': 1,
         'mesh_polyvertnum': 1,
         'mesh_quat': 2,
+        'mesh_texcoord': 2,
+        'mesh_texcoord_num': 1,
+        'mesh_texcoord_offsets': 1,
         'mesh_vert': 2,
         'mesh_vertadr': 1,
         'mesh_vertnum': 1,
@@ -884,14 +946,13 @@ _NDIM = {
         'oct_coeff': 2,
         'opt__broadphase': 0,
         'opt__broadphase_filter': 0,
+        'opt__ccd_iterations': 0,
         'opt__ccd_tolerance': 1,
         'opt__cone': 0,
         'opt__contact_sensor_maxmatch': 0,
         'opt__density': 1,
         'opt__disableflags': 0,
         'opt__enableflags': 0,
-        'opt__epa_iterations': 0,
-        'opt__gjk_iterations': 0,
         'opt__graph_conditional': 0,
         'opt__gravity': 2,
         'opt__has_fluid': 0,
@@ -934,6 +995,13 @@ _NDIM = {
         'qpos0': 2,
         'qpos_spring': 2,
         'rangefinder_sensor_adr': 1,
+        'render_opt__fov_rad': 0,
+        'render_opt__height': 0,
+        'render_opt__render_depth': 0,
+        'render_opt__render_rgb': 0,
+        'render_opt__use_shadows': 0,
+        'render_opt__use_textures': 0,
+        'render_opt__width': 0,
         'sensor_acc_adr': 1,
         'sensor_adr': 1,
         'sensor_adr_to_contact_adr': 1,
@@ -993,6 +1061,10 @@ _NDIM = {
         'tendon_solref_fri': 3,
         'tendon_solref_lim': 3,
         'tendon_stiffness': 2,
+        'tex_adr': 1,
+        'tex_data': 1,
+        'tex_height': 1,
+        'tex_width': 1,
         'wrap_geom_adr': 1,
         'wrap_jnt_adr': 1,
         'wrap_objid': 1,
@@ -1005,14 +1077,13 @@ _NDIM = {
     'Option': {
         'broadphase': 0,
         'broadphase_filter': 0,
+        'ccd_iterations': 0,
         'ccd_tolerance': 1,
         'cone': 0,
         'contact_sensor_maxmatch': 0,
         'density': 1,
         'disableflags': 0,
         'enableflags': 0,
-        'epa_iterations': 0,
-        'gjk_iterations': 0,
         'graph_conditional': 0,
         'gravity': 2,
         'has_fluid': 0,
@@ -1049,6 +1120,7 @@ _BATCH_DIM = {
         'actuator_moment': True,
         'actuator_trntype_body_ncon': True,
         'actuator_velocity': True,
+        'bvh_id': False,
         'cacc': True,
         'cam_xmat': True,
         'cam_xpos': True,
@@ -1075,6 +1147,7 @@ _BATCH_DIM = {
         'crb': True,
         'ctrl': True,
         'cvel': True,
+        'depth': True,
         'efc__D': True,
         'efc__J': True,
         'efc__Jaref': True,
@@ -1130,9 +1203,12 @@ _BATCH_DIM = {
         'geom_skip': False,
         'geom_xmat': True,
         'geom_xpos': True,
+        'group_roots': True,
+        'groups': True,
         'inverse_mul_m_skip': True,
         'light_xdir': True,
         'light_xpos': True,
+        'lowers': True,
         'mocap_pos': True,
         'mocap_quat': True,
         'multiccd_clipped': False,
@@ -1160,6 +1236,7 @@ _BATCH_DIM = {
         'nl': True,
         'nsolving': False,
         'nworld': False,
+        'pixels': True,
         'qLD': True,
         'qLD_integration': True,
         'qLDiagInv': True,
@@ -1223,6 +1300,7 @@ _BATCH_DIM = {
         'ten_wrapadr': True,
         'ten_wrapnum': True,
         'time': True,
+        'uppers': True,
         'wrap_geom_xpos': True,
         'wrap_obj': True,
         'wrap_xpos': True,
@@ -1245,7 +1323,6 @@ _BATCH_DIM = {
         'actuator_actlimited': False,
         'actuator_actnum': False,
         'actuator_actrange': True,
-        'actuator_affine_bias_gain': False,
         'actuator_biasprm': True,
         'actuator_biastype': False,
         'actuator_cranklength': False,
@@ -1300,6 +1377,7 @@ _BATCH_DIM = {
         'body_subtreemass': True,
         'body_tree': False,
         'body_weldid': False,
+        'bvh_ngeom': False,
         'cam_bodyid': False,
         'cam_fovy': False,
         'cam_intrinsic': False,
@@ -1312,6 +1390,7 @@ _BATCH_DIM = {
         'cam_resolution': False,
         'cam_sensorsize': False,
         'cam_targetbodyid': False,
+        'collision_sensor_adr': False,
         'condim_max': False,
         'dof_Madr': False,
         'dof_armature': True,
@@ -1325,6 +1404,7 @@ _BATCH_DIM = {
         'dof_solref': True,
         'dof_tri_col': False,
         'dof_tri_row': False,
+        'enabled_geom_ids': False,
         'eq_active0': False,
         'eq_connect_adr': False,
         'eq_data': True,
@@ -1413,6 +1493,8 @@ _BATCH_DIM = {
         'mat_rgba': True,
         'mat_texid': True,
         'mat_texrepeat': True,
+        'mesh_bounds_size': False,
+        'mesh_bvh_ids': False,
         'mesh_face': False,
         'mesh_faceadr': False,
         'mesh_graph': False,
@@ -1429,6 +1511,9 @@ _BATCH_DIM = {
         'mesh_polyvertadr': False,
         'mesh_polyvertnum': False,
         'mesh_quat': False,
+        'mesh_texcoord': False,
+        'mesh_texcoord_num': False,
+        'mesh_texcoord_offsets': False,
         'mesh_vert': False,
         'mesh_vertadr': False,
         'mesh_vertnum': False,
@@ -1479,14 +1564,13 @@ _BATCH_DIM = {
         'oct_coeff': False,
         'opt__broadphase': False,
         'opt__broadphase_filter': False,
+        'opt__ccd_iterations': False,
         'opt__ccd_tolerance': True,
         'opt__cone': False,
         'opt__contact_sensor_maxmatch': False,
         'opt__density': True,
         'opt__disableflags': False,
         'opt__enableflags': False,
-        'opt__epa_iterations': False,
-        'opt__gjk_iterations': False,
         'opt__graph_conditional': False,
         'opt__gravity': True,
         'opt__has_fluid': False,
@@ -1529,6 +1613,13 @@ _BATCH_DIM = {
         'qpos0': True,
         'qpos_spring': True,
         'rangefinder_sensor_adr': False,
+        'render_opt__fov_rad': False,
+        'render_opt__height': False,
+        'render_opt__render_depth': False,
+        'render_opt__render_rgb': False,
+        'render_opt__use_shadows': False,
+        'render_opt__use_textures': False,
+        'render_opt__width': False,
         'sensor_acc_adr': False,
         'sensor_adr': False,
         'sensor_adr_to_contact_adr': False,
@@ -1588,6 +1679,10 @@ _BATCH_DIM = {
         'tendon_solref_fri': True,
         'tendon_solref_lim': True,
         'tendon_stiffness': True,
+        'tex_adr': False,
+        'tex_data': False,
+        'tex_height': False,
+        'tex_width': False,
         'wrap_geom_adr': False,
         'wrap_jnt_adr': False,
         'wrap_objid': False,
@@ -1600,14 +1695,13 @@ _BATCH_DIM = {
     'Option': {
         'broadphase': False,
         'broadphase_filter': False,
+        'ccd_iterations': False,
         'ccd_tolerance': True,
         'cone': False,
         'contact_sensor_maxmatch': False,
         'density': True,
         'disableflags': False,
         'enableflags': False,
-        'epa_iterations': False,
-        'gjk_iterations': False,
         'graph_conditional': False,
         'gravity': True,
         'has_fluid': False,

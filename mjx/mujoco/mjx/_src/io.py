@@ -201,6 +201,8 @@ def _wp_to_np_type(wp_field: Any, name: str = '') -> Any:
     )
   if isinstance(wp_field, mjwp_types.BlockDim):
     return mjxw.types.BlockDim(**wp_field.__dict__)
+  if isinstance(wp_field, mjwp_types.RenderOptions):
+    return mjxw.types.RenderOptions(**wp_field.__dict__)
   if isinstance(wp_field, tuple) and is_static(wp_field[0]):
     return wp_field
 
@@ -470,7 +472,7 @@ def _put_model_warp(
   # Use MJW fields directly instead of MjModel, so that shape and dtype are
   # always compatible with MJXW (e.g. cam_mat0/geom_aabb).
   for k in fields:
-    if not hasattr(mw, k) or k in ('stat', 'opt'):
+    if not hasattr(mw, k) or k in ('stat', 'opt', 'render_opt'):
       continue
     field = _wp_to_np_type(getattr(mw, k), k)
     fields[k] = field
@@ -829,6 +831,7 @@ def _make_data_warp(
     device: Optional[jax.Device] = None,
     nconmax: int = -1,
     njmax: int = -1,
+    **kwargs: Any,
 ) -> types.Data:
   """Allocate and initialize Data for the Warp implementation."""
   if not isinstance(m, mujoco.MjModel):
@@ -840,8 +843,25 @@ def _make_data_warp(
   if not mjxw.WARP_INSTALLED:
     raise RuntimeError('Warp is not installed.')
 
+  nworld = 1
+  if 'nworld' in kwargs:
+    nworld = kwargs['nworld']
+    del kwargs['nworld']
+  enabled_geom_ids = None
+  if 'enabled_geom_ids' in kwargs:
+    enabled_geom_ids = kwargs['enabled_geom_ids']
+    del kwargs['enabled_geom_ids']
+  mesh_bounds_size = None
+  if 'mesh_bounds_size' in kwargs:
+    mesh_bounds_size = kwargs['mesh_bounds_size']
+    del kwargs['mesh_bounds_size']
+
   with wp.ScopedDevice('cpu'):  # pylint: disable=undefined-variable
-    dw = mjwp.make_data(m, nworld=1, nconmax=nconmax, njmax=njmax)  # pylint: disable=undefined-variable
+    dw = mjwp.make_data(m, nworld=1, nconmax=nconmax, njmax=njmax, **kwargs)  # pylint: disable=undefined-variable
+
+  if 'pixels' in kwargs:
+    dw2 = mjwp.make_data(m, nworld=nworld, nconmax=nconmax, njmax=njmax, **kwargs)  # pylint: disable=undefined-variable
+    mjwp.build_warp_bvh_mjc(m, dw2, bvh_ngeom=kwargs['bvh_ngeom'], enabled_geom_ids=enabled_geom_ids, mesh_bounds_size=mesh_bounds_size)  # pylint: disable=undefined-variable
 
   fields = _make_data_public_fields(m)
   for k in fields:
@@ -892,6 +912,7 @@ def make_data(
     _full_compat: bool = False,  # pylint: disable=invalid-name
     nconmax: int = -1,
     njmax: int = -1,
+    **kwargs: Any,
 ) -> types.Data:
   """Allocate and initialize Data.
 
@@ -935,7 +956,7 @@ def make_data(
   elif impl == types.Impl.C:
     return _make_data_c(m, device)
   elif impl == types.Impl.WARP:
-    return _make_data_warp(m, device, nconmax, njmax)
+    return _make_data_warp(m, device, nconmax, njmax, **kwargs)
 
   raise NotImplementedError(
       f'make_data for implementation "{impl}" not implemented yet.'

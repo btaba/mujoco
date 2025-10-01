@@ -59,6 +59,9 @@ else:
     def step(self, *args, **kwargs):
       pass
 
+    def build_warp_bvh_mjc(self, *args, **kwargs):
+      pass
+
   class _MjwpTypesStub:
     def TileSet(self, *args, **kwargs):  # pylint: disable=invalid-name
       pass

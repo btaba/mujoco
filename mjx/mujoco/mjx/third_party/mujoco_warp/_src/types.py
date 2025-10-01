@@ -24,6 +24,10 @@ MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
+# maximum size (by number of edges) of an horizon in EPA algorithm
+MJ_MAX_EPAHORIZON = 12
+# maximum average number of trianglarfaces EPA can insert at each iteration
+MJ_MAX_EPAFACES = 5
 
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
@@ -41,22 +45,22 @@ class BlockDim:
   qderiv_actuator_passive_actuation: int = 64
   qderiv_actuator_passive_no_actuation: int = 256
   # forward
-  euler_dense: int = 256
+  euler_dense: int = 32
   actuator_velocity: int = 32
-  tendon_velocity: int = 256
+  tendon_velocity: int = 32
   # ray
   ray: int = 64
   # sensor
   contact_sort: int = 64
-  energy_vel_kinetic: int = 256
+  energy_vel_kinetic: int = 32
   # smooth
-  cholesky_factorize: int = 256
-  cholesky_solve: int = 256
-  cholesky_factorize_solve: int = 256
+  cholesky_factorize: int = 32
+  cholesky_solve: int = 32
+  cholesky_factorize_solve: int = 32
   # solver
   update_gradient_cholesky: int = 64
   # support
-  mul_m_dense: int = 256
+  mul_m_dense: int = 32
 
 
 class BroadphaseType(enum.IntEnum):
@@ -384,6 +388,10 @@ class SensorType(enum.IntEnum):
     FRAMEZAXIS: frame z-axis
     FRAMEQUAT: frame orientation, represented as quaternion
     SUBTREECOM: subtree center of mass
+    GEOMDIST: signed distance between two geoms
+    GEOMNORMAL: normal direction between two geoms
+    GEOMFROMTO: segment between two geoms
+    INSIDESITE: 1 if object is inside site, 0 otherwise
     E_POTENTIAL: potential energy
     E_KINETIC: kinetic energy
     CLOCK: simulation time
@@ -429,6 +437,10 @@ class SensorType(enum.IntEnum):
   FRAMEZAXIS = mujoco.mjtSensor.mjSENS_FRAMEZAXIS
   FRAMEQUAT = mujoco.mjtSensor.mjSENS_FRAMEQUAT
   SUBTREECOM = mujoco.mjtSensor.mjSENS_SUBTREECOM
+  GEOMDIST = mujoco.mjtSensor.mjSENS_GEOMDIST
+  GEOMNORMAL = mujoco.mjtSensor.mjSENS_GEOMNORMAL
+  GEOMFROMTO = mujoco.mjtSensor.mjSENS_GEOMFROMTO
+  INSIDESITE = mujoco.mjtSensor.mjSENS_INSIDESITE
   E_POTENTIAL = mujoco.mjtSensor.mjSENS_E_POTENTIAL
   E_KINETIC = mujoco.mjtSensor.mjSENS_E_KINETIC
   CLOCK = mujoco.mjtSensor.mjSENS_CLOCK
@@ -553,7 +565,7 @@ class Option:
     impratio: ratio of friction-to-normal contact impedance
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
-    ccd_tolerance: convex collision solver tolerance
+    ccd_tolerance: convex collision detection tolerance
     gravity: gravitational acceleration
     magnetic: global magnetic flux
     integrator: integration mode (IntegratorType)
@@ -564,8 +576,7 @@ class Option:
     disableflags: bit flags for disabling standard features
     enableflags: bit flags for enabling optional features
     is_sparse: whether to use sparse representations
-    gjk_iterations: number of Gjk iterations in the convex narrowphase
-    epa_iterations: number of Epa iterations in the convex narrowphase
+    ccd_iterations: number of iterations in convex collision detection
     ls_parallel: evaluate engine solver step sizes in parallel
     ls_parallel_min_step: minimum step size for solver linesearch
     wind: wind (for lift, drag, and viscosity)
@@ -600,8 +611,7 @@ class Option:
   disableflags: int
   enableflags: int
   is_sparse: bool
-  gjk_iterations: int  # warp only
-  epa_iterations: int  # warp only
+  ccd_iterations: int
   ls_parallel: bool  # warp only
   ls_parallel_min_step: float  # warp only
   wind: wp.array(dtype=wp.vec3)
@@ -616,6 +626,29 @@ class Option:
   run_collision_detection: bool  # warp only
   legacy_gjk: bool
   contact_sensor_maxmatch: int  # warp only
+
+
+@dataclasses.dataclass
+class RenderOptions:
+  """Render options.
+
+  Attributes:
+    render_rgb: whether to render rgb image
+    render_depth: whether to render depth image
+    use_textures: whether to use textures
+    use_shadows: whether to use shadows
+    width: width of the rendered image
+    height: height of the rendered image
+    fov_rad: field of view in radians
+  """
+
+  render_rgb: bool
+  render_depth: bool
+  use_textures: bool
+  use_shadows: bool
+  width: int
+  height: int
+  fov_rad: float
 
 
 @dataclasses.dataclass
@@ -915,7 +948,6 @@ class Model:
     eq_ten_adr: eq_* addresses of type `TENDON`              (<=neq,)
     actuator_moment_tiles_nv: tiling configuration
     actuator_moment_tiles_nu: tiling configuration
-    actuator_affine_bias_gain: affine bias/gain present
     actuator_trntype: transmission type (TrnType)            (nu,)
     actuator_dyntype: dynamics type (DynType)                (nu,)
     actuator_gaintype: gain type (GainType)                  (nu,)
@@ -1007,6 +1039,7 @@ class Model:
     rangefinder_sensor_adr: map sensor id to rangefinder id  (<=nsensor,)
                     (excluding touch sensors)
                     (excluding limit force sensors)
+    collision_sensor_adr: map sensor id to collision id      (nsensor,)
     sensor_touch_adr: addresses for touch sensors            (<=nsensor,)
     sensor_limitfrc_adr: address for limit force sensors     (<=nsensor,)
     sensor_e_potential: evaluate energy_pos
@@ -1029,6 +1062,20 @@ class Model:
     block_dim: BlockDim
     geom_pair_type_count: count of max number of each potential collision
     has_sdf_geom: whether the model contains SDF geoms
+    taxel_vertadr: address of first vertex in taxel mesh    (nsensor,)
+    taxel_sensorid: sensor id for taxel mesh                (nsensor,)
+    render_opt: render options
+    enabled_geom_ids: ids of enabled geoms                    (ngeom,)
+    mesh_bvh_ids: ids of mesh BVH                             (nmesh,)
+    mesh_bounds_size: bounds size of mesh                     (nmesh,)
+    mesh_texcoord: texcoord of mesh                           (nmeshvert, 2)
+    mesh_texcoord_offsets: offsets of texcoord                (nmesh,)
+    mesh_texcoord_num: number of texcoord                     (nmesh,)
+    tex_adr: texture adr                                     (nworld, ntex,)
+    tex_data: texture data                                    (nworld, ntex,)
+    tex_nchannel: number of channels in texture               (nworld, ntex,)
+    tex_height: height of texture                             (nworld, ntex,)
+    tex_width: width of texture                               (nworld, ntex,)
   """
 
   nq: int
@@ -1239,7 +1286,6 @@ class Model:
   eq_ten_adr: wp.array(dtype=int)
   actuator_moment_tiles_nv: tuple[TileSet, ...]
   actuator_moment_tiles_nu: tuple[TileSet, ...]
-  actuator_affine_bias_gain: bool  # warp only
   actuator_trntype: wp.array(dtype=int)
   actuator_dyntype: wp.array(dtype=int)
   actuator_gaintype: wp.array(dtype=int)
@@ -1325,6 +1371,7 @@ class Model:
   sensor_acc_adr: wp.array(dtype=int)  # warp only
   sensor_rangefinder_adr: wp.array(dtype=int)  # warp only
   rangefinder_sensor_adr: wp.array(dtype=int)  # warp only
+  collision_sensor_adr: wp.array(dtype=int)  # warp only
   sensor_touch_adr: wp.array(dtype=int)  # warp only
   sensor_limitfrc_adr: wp.array(dtype=int)  # warp only
   sensor_e_potential: bool  # warp only
@@ -1348,6 +1395,20 @@ class Model:
   has_sdf_geom: bool  # warp only
   taxel_vertadr: wp.array(dtype=int)  # warp only
   taxel_sensorid: wp.array(dtype=int)  # warp only
+
+  # render
+  render_opt: RenderOptions
+  bvh_ngeom: int
+  enabled_geom_ids: wp.array(dtype=int)
+  mesh_bvh_ids: wp.array(dtype=wp.uint64)
+  mesh_bounds_size: wp.array(dtype=wp.vec3)
+  mesh_texcoord: wp.array(dtype=wp.vec2)
+  mesh_texcoord_offsets: wp.array(dtype=int)
+  mesh_texcoord_num: wp.array(dtype=int)
+  tex_adr: wp.array(dtype=int)
+  tex_data: wp.array(dtype=wp.uint32)
+  tex_height: wp.array(dtype=int)
+  tex_width: wp.array(dtype=int)
 
 
 @dataclasses.dataclass
@@ -1496,12 +1557,12 @@ class Data:
     epa_vert2: vertices in EPA polytope in geom 2 space         (nconmax, 5 + CCDiter)
     epa_vert_index1: vertex indices in EPA polytope for geom 1  (nconmax, 5 + CCDiter)
     epa_vert_index2: vertex indices in EPA polytope for geom 2  (nconmax, 5 + CCDiter)
-    epa_face: faces of polytope represented by three indices    (nconmax, 6 + 6 * CCDiter)
-    epa_pr: projection of origin on polytope faces              (nconmax, 6 + 6 * CCDiter)
-    epa_norm2: epa_pr * epa_pr                                  (nconmax, 6 + 6 * CCDiter)
-    epa_index: index of face in polytope map                    (nconmax, 6 + 6 * CCDiter)
-    epa_map: status of faces in polytope                        (nconmax, 6 + 6 * CCDiter)
-    epa_horizon: index pair (i j) of edges on horizon           (nconmax, 3 * 2 * CCDiter)
+    epa_face: faces of polytope represented by three indices    (nconmax, 6 + 5 * CCDiter)
+    epa_pr: projection of origin on polytope faces              (nconmax, 6 + 5 * CCDiter)
+    epa_norm2: epa_pr * epa_pr                                  (nconmax, 6 + 5 * CCDiter)
+    epa_index: index of face in polytope map                    (nconmax, 6 + 5 * CCDiter)
+    epa_map: status of faces in polytope                        (nconmax, 6 + 5 * CCDiter)
+    epa_horizon: index pair (i j) of edges on horizon           (nconmax, 2 * 12)
     multiccd_polygon: clipped contact surface                   (nconmax, 2 * max_npolygon)
     multiccd_clipped: clipped contact surface (intermediate)    (nconmax, 2 * max_npolygon)
     multiccd_pnormal: plane normal of clipping polygon          (nconmax, max_npolygon)
@@ -1718,3 +1779,12 @@ class Data:
 
   # actuator
   actuator_trntype_body_ncon: wp.array2d(dtype=int)
+
+  # render
+  bvh_id: int
+  lowers: wp.array(dtype=wp.vec3)
+  uppers: wp.array(dtype=wp.vec3)
+  groups: wp.array(dtype=wp.int32)
+  group_roots: wp.array(dtype=wp.int32)
+  pixels: wp.array3d(dtype=wp.vec3)
+  depth: wp.array3d(dtype=float)

@@ -42,7 +42,6 @@ _e = mjwarp.Constraint(
     **{f.name: None for f in dataclasses.fields(mjwarp.Constraint) if f.init}
 )
 
-
 @ffi.format_args_for_warp
 def _forward_shim(
     # Model
@@ -325,8 +324,6 @@ def _forward_shim(
     opt__density: wp.array(dtype=float),
     opt__disableflags: int,
     opt__enableflags: int,
-    opt__epa_iterations: int,
-    opt__gjk_iterations: int,
     opt__graph_conditional: bool,
     opt__gravity: wp.array(dtype=wp.vec3),
     opt__has_fluid: bool,
@@ -726,8 +723,6 @@ def _forward_shim(
   _m.opt.density = opt__density
   _m.opt.disableflags = opt__disableflags
   _m.opt.enableflags = opt__enableflags
-  _m.opt.epa_iterations = opt__epa_iterations
-  _m.opt.gjk_iterations = opt__gjk_iterations
   _m.opt.graph_conditional = opt__graph_conditional
   _m.opt.gravity = opt__gravity
   _m.opt.has_fluid = opt__has_fluid
@@ -1646,8 +1641,6 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
       m.opt.density,
       m.opt.disableflags,
       m.opt.enableflags,
-      m.opt._impl.epa_iterations,
-      m.opt._impl.gjk_iterations,
       m.opt._impl.graph_conditional,
       m.opt.gravity,
       m.opt._impl.has_fluid,
@@ -2053,7 +2046,6 @@ _e = mjwarp.Constraint(
     **{f.name: None for f in dataclasses.fields(mjwarp.Constraint) if f.init}
 )
 
-
 @ffi.format_args_for_warp
 def _step_shim(
     # Model
@@ -2066,7 +2058,6 @@ def _step_shim(
     actuator_actlimited: wp.array(dtype=bool),
     actuator_actnum: wp.array(dtype=int),
     actuator_actrange: wp.array2d(dtype=wp.vec2),
-    actuator_affine_bias_gain: bool,
     actuator_biasprm: wp.array2d(dtype=mjwp_types.vec10f),
     actuator_biastype: wp.array(dtype=int),
     actuator_cranklength: wp.array(dtype=float),
@@ -2337,8 +2328,6 @@ def _step_shim(
     opt__density: wp.array(dtype=float),
     opt__disableflags: int,
     opt__enableflags: int,
-    opt__epa_iterations: int,
-    opt__gjk_iterations: int,
     opt__graph_conditional: bool,
     opt__gravity: wp.array(dtype=wp.vec3),
     opt__has_fluid: bool,
@@ -2562,7 +2551,6 @@ def _step_shim(
   _m.actuator_actlimited = actuator_actlimited
   _m.actuator_actnum = actuator_actnum
   _m.actuator_actrange = actuator_actrange
-  _m.actuator_affine_bias_gain = actuator_affine_bias_gain
   _m.actuator_biasprm = actuator_biasprm
   _m.actuator_biastype = actuator_biastype
   _m.actuator_cranklength = actuator_cranklength
@@ -2752,8 +2740,6 @@ def _step_shim(
   _m.opt.density = opt__density
   _m.opt.disableflags = opt__disableflags
   _m.opt.enableflags = opt__enableflags
-  _m.opt.epa_iterations = opt__epa_iterations
-  _m.opt.gjk_iterations = opt__gjk_iterations
   _m.opt.graph_conditional = opt__graph_conditional
   _m.opt.gravity = opt__gravity
   _m.opt.has_fluid = opt__has_fluid
@@ -3439,7 +3425,6 @@ def _step_jax_impl(m: types.Model, d: types.Data):
       m.actuator_actlimited,
       m.actuator_actnum,
       m.actuator_actrange,
-      m._impl.actuator_affine_bias_gain,
       m.actuator_biasprm,
       m.actuator_biastype,
       m.actuator_cranklength,
@@ -3710,8 +3695,6 @@ def _step_jax_impl(m: types.Model, d: types.Data):
       m.opt.density,
       m.opt.disableflags,
       m.opt.enableflags,
-      m.opt._impl.epa_iterations,
-      m.opt._impl.gjk_iterations,
       m.opt._impl.graph_conditional,
       m.opt.gravity,
       m.opt._impl.has_fluid,

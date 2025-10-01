@@ -17,11 +17,15 @@
 
 # isort: off
 from mujoco.mjx.third_party.mujoco_warp._src.forward import step as step
+from mujoco.mjx.third_party.mujoco_warp._src.render import render as render
 from mujoco.mjx.third_party.mujoco_warp._src.types import Model as Model
 from mujoco.mjx.third_party.mujoco_warp._src.types import Data as Data
 # isort: on
 
-from ._src import test_util as test_util  # used by viewer and testspeed, not meant for public consumption
+from mujoco.mjx.third_party.mujoco_warp._src import test_util as test_util  # used by viewer and testspeed, not meant for public consumption
+from mujoco.mjx.third_party.mujoco_warp._src.bvh import build_warp_bvh as build_warp_bvh
+from mujoco.mjx.third_party.mujoco_warp._src.bvh import build_warp_bvh_mjc as build_warp_bvh_mjc
+from mujoco.mjx.third_party.mujoco_warp._src.bvh import refit_warp_bvh as refit_warp_bvh
 from mujoco.mjx.third_party.mujoco_warp._src.collision_driver import collision as collision
 from mujoco.mjx.third_party.mujoco_warp._src.collision_driver import nxn_broadphase as nxn_broadphase
 from mujoco.mjx.third_party.mujoco_warp._src.collision_driver import sap_broadphase as sap_broadphase
