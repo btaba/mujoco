@@ -23,6 +23,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import jax
 from jax import numpy as jp
+import mujoco
 from mujoco import mjx
 from mujoco.mjx._src import io
 from mujoco.mjx._src import render
@@ -73,15 +74,19 @@ class RenderTest(parameterized.TestCase):
         self.skipTest('No CUDA GPU device available.')
 
     m = tu.load_test_file('humanoid/humanoid.xml')
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
 
     camera_id = 1
+    width, height = 512, 512
     rng = jax.random.PRNGKey(0)
     rng, key = jax.random.split(rng)
     qpos = jax.random.uniform(key, (m.nq,))
 
+    import IPython; IPython.embed(user_ns=dict(globals(), **locals()))
+
     # JAX
     mx = mjx.put_model(m, impl='warp')
-    width, height = 128, 128
     mx = mx.tree_replace({'_impl.render_opt': dataclasses.replace(
         mx._impl.render_opt,
         width=width,
@@ -90,25 +95,37 @@ class RenderTest(parameterized.TestCase):
         render_depth=True,
         use_shadows=True,
         use_textures=True,
+        fov_rad=wp.radians(60.0),
     )})
     dx = mjx.make_data(
         m, impl='warp', pixels=width * height, bvh_ngeom=mx._impl.bvh_ngeom,
         enabled_geom_ids=mx._impl.enabled_geom_ids,
         mesh_bounds_size=mx._impl.mesh_bounds_size,
     )
-    dx = dx.replace(qpos=qpos)
+    dx = dx.replace(qpos=d.qpos)
+    # dx = dx.tree_replace({'_impl.bvh_id': 4, '_impl.group_roots': dw.group_roots.numpy()})  # if I use the bvh from below, I can repro
+    # this doesn't work
     dx = jax.jit(forward.forward)(mx, dx)
     dx = jax.jit(render.render)(mx, dx)
     save_image(dx._impl.pixels, camera_id, width, height)
 
     # Warp
     mw = mjw.put_model(m)
+    mw.render_opt.fov_rad = wp.radians(60.0)
+    mw.render_opt.width = width
+    mw.render_opt.height = height
     dw = mjw.make_data(m, nworld=1, nconmax=1_000, njmax=1_000, pixels=width*height, bvh_ngeom=mw.bvh_ngeom)
-    dw.qpos = wp.array(qpos[None])
+    dw.qpos = wp.array(d.qpos[None], dtype=wp.float32)
     mjw.forward(mw, dw)
     mjw.build_warp_bvh(mw, dw)
     mjw.render(mw, dw)
     save_image(dw.pixels.numpy()[0], camera_id, width, height)
+
+    # this works...
+    dx = dx.tree_replace({'_impl.bvh_id': dw.bvh_id, '_impl.group_roots': dw.group_roots.numpy()})  # if I use the bvh from below, I can repro
+    dx = jax.jit(forward.forward)(mx, dx)
+    dx = jax.jit(render.render)(mx, dx)
+    save_image(dx._impl.pixels, camera_id, width, height)
 
     # With JAX vmap
     batch_size = 8
@@ -117,6 +134,7 @@ class RenderTest(parameterized.TestCase):
         m, impl='warp', pixels=width * height, bvh_ngeom=mx._impl.bvh_ngeom,
         enabled_geom_ids=mx._impl.enabled_geom_ids,
         mesh_bounds_size=mx._impl.mesh_bounds_size,
+        nworld=batch_size,
     ))(worldids)
     qpos = jax.random.uniform(key, (batch_size, m.nq,))
     dx_batch = dx_batch.replace(qpos=qpos)

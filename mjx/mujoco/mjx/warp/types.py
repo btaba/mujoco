@@ -261,7 +261,7 @@ class DataWarp(PyTreeNode):
   actuator_moment: jax.Array
   actuator_trntype_body_ncon: jax.Array
   actuator_velocity: jax.Array
-  bvh_id: str
+  bvh_id: int
   cacc: jax.Array
   cdof: jax.Array
   cdof_dot: jax.Array

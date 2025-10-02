@@ -210,7 +210,6 @@ def compute_bvh_group_roots(
 from typing import Any
 def build_warp_bvh_mjc(m: Any, d: Data, bvh_ngeom: int, enabled_geom_ids: Any, mesh_bounds_size: Any):
   """Build a Warp BVH for all geometries in all worlds."""
-
   wp.launch(
     kernel=compute_bvh_bounds2,
     dim=(d.nworld * bvh_ngeom),

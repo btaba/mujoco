@@ -859,10 +859,18 @@ def _make_data_warp(
   with wp.ScopedDevice('cpu'):  # pylint: disable=undefined-variable
     dw = mjwp.make_data(m, nworld=1, nconmax=nconmax, njmax=njmax, **kwargs)  # pylint: disable=undefined-variable
 
+  # d = mujoco.MjData(m)
+  # mujoco.mj_forward(m, d)
   if 'pixels' in kwargs:
     dw2 = mjwp.make_data(m, nworld=nworld, nconmax=nconmax, njmax=njmax, **kwargs)  # pylint: disable=undefined-variable
-    mjwp.build_warp_bvh_mjc(
-      m, dw2, bvh_ngeom=kwargs['bvh_ngeom'], enabled_geom_ids=enabled_geom_ids, mesh_bounds_size=mesh_bounds_size)  # pylint: disable=undefined-variable
+    # dw2.qpos = wp.array(d.qpos[None], dtype=wp.float32)
+    mw = mjwp.put_model(m)
+    # mw.render_opt.fov_rad = wp.radians(60.0)
+    # mw.render_opt.width = 512
+    # mw.render_opt.height = 512
+    # mjwp.build_warp_bvh_mjc(
+    #   mw, dw2, bvh_ngeom=kwargs['bvh_ngeom'], enabled_geom_ids=enabled_geom_ids, mesh_bounds_size=mesh_bounds_size)  # pylint: disable=undefined-variable
+    mjwp.build_warp_bvh(mw, dw2)
     bvh_id = dw2.bvh_id
 
   fields = _make_data_public_fields(m)
@@ -890,6 +898,7 @@ def _make_data_warp(
     impl_fields[k] = field
 
   impl_fields['bvh_id'] = bvh_id
+  impl_fields['group_roots'] = dw2.group_roots.numpy()
 
   data = types.Data(
       qpos=m.qpos0.astype(np.float32),
