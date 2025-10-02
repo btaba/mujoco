@@ -15,21 +15,37 @@
 """Tests for codegen'd smooth functions."""
 
 import dataclasses
+import functools
 import os
 import tempfile
 
 from absl.testing import absltest
 from absl.testing import parameterized
 import jax
+from jax import numpy as jp
 from mujoco import mjx
 from mujoco.mjx._src import io
 from mujoco.mjx._src import render
+from mujoco.mjx._src import forward
 import mujoco.mjx.warp as mjxw
 from mujoco.mjx.warp import test_util as tu
 from mujoco.mjx.warp import warp as wp  # pylint: disable=g-importing-member
 import numpy as np
+import mediapy as media
+from mujoco.mjx.third_party import mujoco_warp as mjw
 
 _FORCE_TEST = os.environ.get('MJX_WARP_FORCE_TEST', '0') == '1'
+
+
+def save_image(pixels, cam_id, width, height, out_fpath='test.png'):
+  pixels = pixels[cam_id]
+  pixels = pixels.reshape((width, height))
+  r = (pixels & 0xFF).astype(np.uint8)
+  g = ((pixels >> 8) & 0xFF).astype(np.uint8)
+  b = ((pixels >> 16) & 0xFF).astype(np.uint8)
+  pixels = np.dstack([r, g, b])
+  media.write_image(out_fpath, pixels)
+
 
 
 class RenderTest(parameterized.TestCase):
@@ -57,9 +73,15 @@ class RenderTest(parameterized.TestCase):
         self.skipTest('No CUDA GPU device available.')
 
     m = tu.load_test_file('humanoid/humanoid.xml')
-    mx = mjx.put_model(m, impl='warp')
 
-    width, height = 64, 64
+    camera_id = 1
+    rng = jax.random.PRNGKey(0)
+    rng, key = jax.random.split(rng)
+    qpos = jax.random.uniform(key, (m.nq,))
+
+    # JAX
+    mx = mjx.put_model(m, impl='warp')
+    width, height = 128, 128
     mx = mx.tree_replace({'_impl.render_opt': dataclasses.replace(
         mx._impl.render_opt,
         width=width,
@@ -69,68 +91,38 @@ class RenderTest(parameterized.TestCase):
         use_shadows=True,
         use_textures=True,
     )})
-
-    rng = jax.random.PRNGKey(0)
     dx = mjx.make_data(
         m, impl='warp', pixels=width * height, bvh_ngeom=mx._impl.bvh_ngeom,
         enabled_geom_ids=mx._impl.enabled_geom_ids,
         mesh_bounds_size=mx._impl.mesh_bounds_size,
     )
-    rng, key = jax.random.split(rng)
-    qpos = jax.random.uniform(key, (m.nq,))
     dx = dx.replace(qpos=qpos)
-
+    dx = jax.jit(forward.forward)(mx, dx)
     dx = jax.jit(render.render)(mx, dx)
-    import IPython; IPython.embed(user_ns=dict(globals(), **locals()))
+    save_image(dx._impl.pixels, camera_id, width, height)
 
+    # Warp
+    mw = mjw.put_model(m)
+    dw = mjw.make_data(m, nworld=1, nconmax=1_000, njmax=1_000, pixels=width*height, bvh_ngeom=mw.bvh_ngeom)
+    dw.qpos = wp.array(qpos[None])
+    mjw.forward(mw, dw)
+    mjw.build_warp_bvh(mw, dw)
+    mjw.render(mw, dw)
+    save_image(dw.pixels.numpy()[0], camera_id, width, height)
 
-    # batch_size = 8
-    # worldids = jp.arange(batch_size)
-    # dx_batch = jax.vmap(functools.partial(tu.make_data, m))(worldids)
-
-  # def test_kinematics_vmap(self):
-  #   """Tests kinematics with batched data."""
-  #   if not mjxw.WARP_INSTALLED:
-  #     self.skipTest('Warp not installed.')
-  #   if not io.has_cuda_gpu_device():
-  #     self.skipTest('No CUDA GPU device available.')
-
-  #   m = tu.load_test_file('pendula.xml')
-
-  #   batch_size = 7
-  #   d = mujoco.MjData(m)
-  #   mx = mjx.put_model(m, impl='warp')
-
-  #   worldids = jp.arange(batch_size)
-  #   dx_batch = jax.vmap(functools.partial(tu.make_data, m))(worldids)
-  #   fields = ('xanchor', 'xaxis', 'xpos', 'xquat', 'xmat', 'xipos', 'ximat',
-  #             'geom_xpos', 'geom_xmat', 'site_xpos', 'site_xmat')  # fmt: skip
-  #   for f in fields:
-  #     dx_batch = dx_batch.replace(**{f: jp.zeros_like(getattr(dx_batch, f))})
-
-  #   dx_batch = jax.jit(jax.vmap(smooth.kinematics, in_axes=(None, 0)))(
-  #       mx, dx_batch
-  #   )
-
-  #   for i in range(batch_size):
-  #     dx = dx_batch[i]
-
-  #     d.qpos[:] = dx.qpos
-  #     d.mocap_pos[:] = dx.mocap_pos
-  #     d.mocap_quat[:] = dx.mocap_quat
-  #     mujoco.mj_forward(m, d)
-
-  #     tu.assert_attr_eq(d, dx, 'xanchor')
-  #     tu.assert_attr_eq(d, dx, 'xaxis')
-  #     tu.assert_attr_eq(d, dx, 'xpos')
-  #     tu.assert_attr_eq(d, dx, 'xquat')
-  #     tu.assert_eq(d.xmat.reshape((-1, 3, 3)), dx.xmat, 'xmat')
-  #     tu.assert_attr_eq(d, dx, 'xipos')
-  #     tu.assert_eq(d.ximat.reshape((-1, 3, 3)), dx.ximat, 'ximat')
-  #     tu.assert_attr_eq(d, dx, 'geom_xpos')
-  #     tu.assert_eq(d.geom_xmat.reshape((-1, 3, 3)), dx.geom_xmat, 'geom_xmat')
-  #     tu.assert_attr_eq(d, dx, 'site_xpos')
-  #     tu.assert_eq(d.site_xmat.reshape((-1, 3, 3)), dx.site_xmat, 'site_xmat')
+    # With JAX vmap
+    batch_size = 8
+    worldids = jp.arange(batch_size)
+    dx_batch = jax.vmap(lambda x: mjx.make_data(
+        m, impl='warp', pixels=width * height, bvh_ngeom=mx._impl.bvh_ngeom,
+        enabled_geom_ids=mx._impl.enabled_geom_ids,
+        mesh_bounds_size=mx._impl.mesh_bounds_size,
+    ))(worldids)
+    qpos = jax.random.uniform(key, (batch_size, m.nq,))
+    dx_batch = dx_batch.replace(qpos=qpos)
+    dx_batch = jax.jit(jax.vmap(forward.forward, in_axes=(None, 0)))(mx, dx_batch)
+    dx_batch = jax.jit(jax.vmap(render.render, in_axes=(None, 0)))(mx, dx_batch)
+    save_image(dx_batch._impl.pixels[1], camera_id, width, height)
 
 
 if __name__ == '__main__':

@@ -237,7 +237,7 @@ def build_warp_bvh_mjc(m: Any, d: Data, bvh_ngeom: int, enabled_geom_ids: Any, m
   )
 
   # Store BVH handles for later queries
-  key = hash(bvh) >> 32
+  key = len(REGISTRY) + 1
   REGISTRY[key] = bvh
   d.bvh_id = key
 
@@ -250,8 +250,6 @@ def build_warp_bvh_mjc(m: Any, d: Data, bvh_ngeom: int, enabled_geom_ids: Any, m
 
 def build_warp_bvh(m: Model, d: Data):
   """Build a Warp BVH for all geometries in all worlds."""
-  raise ValueError('blah')
-
   wp.launch(
     kernel=compute_bvh_bounds,
     dim=(d.nworld * m.bvh_ngeom),
@@ -278,8 +276,9 @@ def build_warp_bvh(m: Model, d: Data):
   )
 
   # Store BVH handles for later queries
-  REGISTRY[bvh.id] = bvh
-  d.bvh_id = bvh.id
+  key = len(REGISTRY) + 1
+  REGISTRY[key] = bvh
+  d.bvh_id = key
 
   wp.launch(
     kernel=compute_bvh_group_roots,
