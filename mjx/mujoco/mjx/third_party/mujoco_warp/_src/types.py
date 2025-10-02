@@ -1786,5 +1786,5 @@ class Data:
   uppers: wp.array(dtype=wp.vec3)
   groups: wp.array(dtype=wp.int32)
   group_roots: wp.array(dtype=wp.int32)
-  pixels: wp.array3d(dtype=wp.vec3)
+  pixels: wp.array3d(dtype=wp.int32)
   depth: wp.array3d(dtype=float)

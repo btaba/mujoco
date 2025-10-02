@@ -95,13 +95,14 @@ def _render_shim(
     light_xdir: wp.array2d(dtype=wp.vec3),
     light_xpos: wp.array2d(dtype=wp.vec3),
     lowers: wp.array(dtype=wp.vec3),
-    pixels: wp.array3d(dtype=wp.vec3),
+    pixels: wp.array3d(dtype=wp.uint32),
     uppers: wp.array(dtype=wp.vec3),
 ):
   _m.stat = _s
   _m.opt = _o
   _d.efc = _e
   _d.contact = _c
+  _m.render_opt = _ro
   _m.bvh_ngeom = bvh_ngeom
   _m.enabled_geom_ids = enabled_geom_ids
   _m.geom_dataid = geom_dataid
@@ -215,13 +216,13 @@ def _render_jax_impl(m: types.Model, d: types.Data):
       m.tex_data,
       m.tex_height,
       m.tex_width,
-      m._impl.render_opt__fov_rad,
-      m._impl.render_opt__height,
-      m._impl.render_opt__render_depth,
-      m._impl.render_opt__render_rgb,
-      m._impl.render_opt__use_shadows,
-      m._impl.render_opt__use_textures,
-      m._impl.render_opt__width,
+      m._impl.render_opt.fov_rad,
+      m._impl.render_opt.height,
+      m._impl.render_opt.render_depth,
+      m._impl.render_opt.render_rgb,
+      m._impl.render_opt.use_shadows,
+      m._impl.render_opt.use_textures,
+      m._impl.render_opt.width,
       d._impl.bvh_id,
       d.cam_xmat,
       d.cam_xpos,

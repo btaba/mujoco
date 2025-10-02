@@ -20,6 +20,7 @@ from mujoco.mjx.third_party.mujoco_warp._src.forward import step as step
 from mujoco.mjx.third_party.mujoco_warp._src.render import render as render
 from mujoco.mjx.third_party.mujoco_warp._src.types import Model as Model
 from mujoco.mjx.third_party.mujoco_warp._src.types import Data as Data
+from mujoco.mjx.third_party.mujoco_warp._src.types import RenderOptions as RenderOptions
 # isort: on
 
 from mujoco.mjx.third_party.mujoco_warp._src import test_util as test_util  # used by viewer and testspeed, not meant for public consumption

@@ -37,8 +37,10 @@ class RenderTest(parameterized.TestCase):
   def setUp(self):
     super().setUp()
     if mjxw.WARP_INSTALLED:
-      self.tempdir = tempfile.TemporaryDirectory()
-      wp.config.kernel_cache_dir = self.tempdir.name
+      # self.tempdir = tempfile.TemporaryDirectory()
+      tempdir = '/tmp/wp_kernel_cache_dir_RenderTest'
+      # wp.config.kernel_cache_dir = self.tempdir.name
+      wp.config.kernel_cache_dir = tempdir
     np.random.seed(0)
 
   def tearDown(self):
@@ -72,11 +74,19 @@ class RenderTest(parameterized.TestCase):
     dx = mjx.make_data(
         m, impl='warp', pixels=width * height, bvh_ngeom=mx._impl.bvh_ngeom,
         enabled_geom_ids=mx._impl.enabled_geom_ids,
+        mesh_bounds_size=mx._impl.mesh_bounds_size,
     )
     rng, key = jax.random.split(rng)
     qpos = jax.random.uniform(key, (m.nq,))
     dx = dx.replace(qpos=qpos)
+
     dx = jax.jit(render.render)(mx, dx)
+    import IPython; IPython.embed(user_ns=dict(globals(), **locals()))
+
+
+    # batch_size = 8
+    # worldids = jp.arange(batch_size)
+    # dx_batch = jax.vmap(functools.partial(tu.make_data, m))(worldids)
 
   # def test_kinematics_vmap(self):
   #   """Tests kinematics with batched data."""

@@ -618,7 +618,7 @@ _NDIM = {
         'nl': 1,
         'nsolving': 1,
         'nworld': 0,
-        'pixels': 4,
+        'pixels': 3,
         'qLD': 3,
         'qLD_integration': 3,
         'qLDiagInv': 2,

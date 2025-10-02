@@ -861,7 +861,9 @@ def _make_data_warp(
 
   if 'pixels' in kwargs:
     dw2 = mjwp.make_data(m, nworld=nworld, nconmax=nconmax, njmax=njmax, **kwargs)  # pylint: disable=undefined-variable
-    mjwp.build_warp_bvh_mjc(m, dw2, bvh_ngeom=kwargs['bvh_ngeom'], enabled_geom_ids=enabled_geom_ids, mesh_bounds_size=mesh_bounds_size)  # pylint: disable=undefined-variable
+    mjwp.build_warp_bvh_mjc(
+      m, dw2, bvh_ngeom=kwargs['bvh_ngeom'], enabled_geom_ids=enabled_geom_ids, mesh_bounds_size=mesh_bounds_size)  # pylint: disable=undefined-variable
+    bvh_id = dw2.bvh_id
 
   fields = _make_data_public_fields(m)
   for k in fields:
@@ -878,9 +880,16 @@ def _make_data_warp(
   for k in mjxw.types.DataWarp.__annotations__.keys():
     field = _get_nested_attr(dw, k, split='__')
     field = _wp_to_np_type(field)
+    if k in ('groups', 'lowers', 'uppers'):
+      impl_fields[k] = field
+      continue  # TODO(Stafah), remove this hack
     if mjxw.types._BATCH_DIM['Data'][k]:  # pylint: disable=protected-access
       field = field.reshape(field.shape[1:])
+    if k == 'pixels':
+      field = field.astype(jp.uint32)
     impl_fields[k] = field
+
+  impl_fields['bvh_id'] = bvh_id
 
   data = types.Data(
       qpos=m.qpos0.astype(np.float32),

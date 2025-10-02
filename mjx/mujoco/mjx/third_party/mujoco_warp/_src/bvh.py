@@ -1,5 +1,6 @@
 from typing import Tuple
 
+import numpy as np
 import warp as wp
 
 from mujoco.mjx.third_party.mujoco_warp._src.types import GeomType
@@ -148,6 +149,53 @@ def compute_bvh_bounds(
   uppers[world_id * bvh_ngeom + bvh_geom_local] = upper
   groups[world_id * bvh_ngeom + bvh_geom_local] = world_id
 
+@wp.kernel
+def compute_bvh_bounds2(
+  bvh_ngeom: int,
+  nworld: int,
+  enabled_geom_ids: wp.array(dtype=int),
+  geom_type: wp.array(dtype=int),
+  geom_dataid: wp.array(dtype=int),
+  geom_size: wp.array(dtype=wp.vec3),
+  geom_pos: wp.array2d(dtype=wp.vec3),
+  geom_rot: wp.array2d(dtype=wp.mat33),
+  mesh_bounds_size: wp.array(dtype=wp.vec3),
+  lowers: wp.array(dtype=wp.vec3),
+  uppers: wp.array(dtype=wp.vec3),
+  groups: wp.array(dtype=wp.int32),
+):
+  tid = wp.tid()
+  world_id = tid // bvh_ngeom
+  bvh_geom_local = tid % bvh_ngeom
+
+  if bvh_geom_local >= bvh_ngeom or world_id >= nworld:
+    return
+
+  geom_id = enabled_geom_ids[bvh_geom_local]
+
+  pos = geom_pos[world_id, geom_id]
+  rot = geom_rot[world_id, geom_id]
+  size = geom_size[geom_id]
+  type = geom_type[geom_id]
+
+  if type == GeomType.SPHERE:
+    lower, upper = compute_sphere_bounds(pos, rot, size)
+  elif type == GeomType.CAPSULE:
+    lower, upper = compute_capsule_bounds(pos, rot, size)
+  elif type == GeomType.PLANE:
+    lower, upper = compute_plane_bounds(pos, rot, size)
+  elif type == GeomType.MESH:
+    size = mesh_bounds_size[geom_dataid[geom_id]]
+    lower, upper = compute_box_bounds(pos, rot, size)
+  elif type == GeomType.ELLIPSOID:
+    lower, upper = compute_ellipsoid_bounds(pos, rot, size)
+  elif type == GeomType.BOX:
+    lower, upper = compute_box_bounds(pos, rot, size)
+
+  lowers[world_id * bvh_ngeom + bvh_geom_local] = lower
+  uppers[world_id * bvh_ngeom + bvh_geom_local] = upper
+  groups[world_id * bvh_ngeom + bvh_geom_local] = world_id
+
 
 @wp.kernel
 def compute_bvh_group_roots(
@@ -164,18 +212,18 @@ def build_warp_bvh_mjc(m: Any, d: Data, bvh_ngeom: int, enabled_geom_ids: Any, m
   """Build a Warp BVH for all geometries in all worlds."""
 
   wp.launch(
-    kernel=compute_bvh_bounds,
+    kernel=compute_bvh_bounds2,
     dim=(d.nworld * bvh_ngeom),
     inputs=[
       int(bvh_ngeom),
       d.nworld,
-      wp.array(enabled_geom_ids, dtype=int),
-      wp.array(m.geom_type, dtype=int),
-      wp.array(m.geom_dataid, dtype=int),
-      wp.array(m.geom_size, dtype=wp.vec3),
+      wp.array(enabled_geom_ids, dtype=int, device='cuda:0'),
+      wp.array(m.geom_type, dtype=int, device='cuda:0'),
+      wp.array(m.geom_dataid, dtype=int, device='cuda:0'),
+      wp.array(m.geom_size, dtype=wp.vec3, device='cuda:0'),
       d.geom_xpos,
       d.geom_xmat,
-      wp.array(mesh_bounds_size, dtype=wp.vec3),
+      wp.array(mesh_bounds_size, dtype=wp.vec3, device='cuda:0'),
       d.lowers,
       d.uppers,
       d.groups,
@@ -189,8 +237,9 @@ def build_warp_bvh_mjc(m: Any, d: Data, bvh_ngeom: int, enabled_geom_ids: Any, m
   )
 
   # Store BVH handles for later queries
-  REGISTRY[bvh.id] = bvh
-  d.bvh_id = bvh.id
+  key = hash(bvh) >> 32
+  REGISTRY[key] = bvh
+  d.bvh_id = key
 
   wp.launch(
     kernel=compute_bvh_group_roots,
@@ -201,6 +250,7 @@ def build_warp_bvh_mjc(m: Any, d: Data, bvh_ngeom: int, enabled_geom_ids: Any, m
 
 def build_warp_bvh(m: Model, d: Data):
   """Build a Warp BVH for all geometries in all worlds."""
+  raise ValueError('blah')
 
   wp.launch(
     kernel=compute_bvh_bounds,
