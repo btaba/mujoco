@@ -619,6 +619,7 @@ class FfiCallable:
                     # keep a reference to the capture object to prevent required modules getting unloaded
                     call_desc.capture = capture
                 elif self.graph_mode == GraphMode.WARP:
+                    print('>>>>>>>>>> Capture Warp Graph N times:', len(call_desc.captures))
                     # capturing with WARP
                     with wp.ScopedCapture() as capture:
                         self.func(*arg_list)
