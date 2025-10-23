@@ -951,6 +951,7 @@ def make_data(
   elif naconmax < 0:
     raise ValueError("naconmax must be >= 0")
 
+  print('>>>>>>> naconmax', naconmax)
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
 

@@ -43,9 +43,9 @@ class ForwardTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
-    if mjxw.WARP_INSTALLED:
-      self.tempdir = tempfile.TemporaryDirectory()
-      wp.config.kernel_cache_dir = self.tempdir.name
+    # if mjxw.WARP_INSTALLED:
+    #   self.tempdir = tempfile.TemporaryDirectory()
+    #   wp.config.kernel_cache_dir = self.tempdir.name
     np.random.seed(0)
 
   def tearDown(self):
@@ -201,9 +201,9 @@ class StepTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
-    if mjxw.WARP_INSTALLED:
-      self.tempdir = tempfile.TemporaryDirectory()
-      wp.config.kernel_cache_dir = self.tempdir.name
+    # if mjxw.WARP_INSTALLED:
+    #   self.tempdir = tempfile.TemporaryDirectory()
+    #   wp.config.kernel_cache_dir = self.tempdir.name
     np.random.seed(0)
 
   def tearDown(self):
@@ -235,10 +235,9 @@ class StepTest(parameterized.TestCase):
     dx_batch = jax.vmap(functools.partial(tu.make_data, m))(worldids)
     dx_batch_orig = dx_batch
 
+    v_step = jax.jit(jax.vmap(forward.step, in_axes=(None, 0)))
     for _ in range(10):
-      dx_batch = jax.jit(jax.vmap(forward.step, in_axes=(None, 0)))(
-          mx, dx_batch
-      )
+      dx_batch = v_step(mx, dx_batch)
 
     for i in range(batch_size):
       dx = dx_batch[i]

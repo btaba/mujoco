@@ -97,7 +97,9 @@ def flatten_signature(signature: inspect.Signature, args: Tuple[Any, ...]):
 def jax_callable_variadic_tuple(
     func: Callable,  # pylint: disable=g-bare-generic
     num_outputs: int = 1,
-    graph_mode: ffi.GraphMode = ffi.GraphMode.WARP,
+    # graph_mode: ffi.GraphMode = ffi.GraphMode.WARP,
+    graph_mode: ffi.GraphMode = ffi.GraphMode.WARP_FORCE_CAPTURE,
+    # graph_mode: ffi.GraphMode = ffi.GraphMode.WARP_STAGED,
     vmap_method: Optional[str] = None,
     output_dims: Optional[dict[str, tuple[int, ...]]] = None,
     in_out_argnames: Optional[Sequence[str]] = None,

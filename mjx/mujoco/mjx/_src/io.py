@@ -486,6 +486,7 @@ def _put_model_warp(
   )
 
   model = jax.device_put(model, device=device)
+  print('>>>>>> Done put_model warp.')
   return _strip_weak_type(model)
 
 
@@ -848,15 +849,6 @@ def _make_data_warp(
       field = field.reshape(field.shape[1:])
     impl_fields[k] = field
 
-  data = types.Data(
-      qpos=m.qpos0.astype(np.float32),
-      eq_active=m.eq_active0.astype(bool),
-      **fields,
-      _impl=mjxw.types.DataWarp(**impl_fields),
-  )
-
-  data = jax.device_put(data, device=device)
-
   with wp.ScopedDevice('cuda:0'):  # pylint: disable=undefined-variable
     # Warm-up the warp kernel cache.
     # TODO(robotics-simulation): remove this warmup compilation once warp
@@ -868,6 +860,16 @@ def _make_data_warp(
     # pylint: enable=undefined-variable
   del dw, mw
 
+  data = types.Data(
+      qpos=m.qpos0.astype(np.float32),
+      eq_active=m.eq_active0.astype(bool),
+      **fields,
+      _impl=mjxw.types.DataWarp(**impl_fields),
+  )
+
+  data = jax.device_put(data, device=device)
+
+  print('>>>>>> Done make_data warp.')
   return data
 
 

@@ -13,6 +13,9 @@
 # limitations under the License.
 # ==============================================================================
 """Run benchmarks."""
+import os
+os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
 import functools
 import os
@@ -44,7 +47,7 @@ _NSTEP = flags.DEFINE_integer('nstep', 1000, 'number of steps per rollout')
 _NENV = flags.DEFINE_integer('nenv', 8192, 'number of environments to simulate')
 _UNROLL = flags.DEFINE_integer('unroll', 4, 'number of steps to unroll')
 _NCONMAX = flags.DEFINE_integer('nconmax', 30_000, 'max contacts')
-_NJMAX = flags.DEFINE_integer('njmax', 80_000, 'max constraints')
+_NJMAX = flags.DEFINE_integer('njmax', 10, 'max constraints')
 _WP_KERNEL_CACHE_DIR = flags.DEFINE_string(
     'wp_kernel_cache_dir',
     None,
@@ -99,6 +102,7 @@ def benchmark(
 
   key = jax.random.split(jax.random.key(0), nenv)
   d = jax_jit(init)(key)
+  # d = init(key)
   jax.block_until_ready(d)
 
   @jax_jit
@@ -310,7 +314,7 @@ def benchmark_raw_warp(
 
   mw = mjwarp.put_model(m)
   dw = mjwarp.make_data(
-      m, nworld=nenv, nconmax=_NCONMAX.value, njmax=_NJMAX.value
+      m, nworld=nenv, naconmax=_NCONMAX.value, njmax=_NJMAX.value
   )
 
   if function == 'kinematics':
@@ -353,7 +357,7 @@ def _main(_: Sequence[str]):
   except Exception as _:
     m = mujoco.MjModel.from_xml_path(modelfile)
 
-  mx = mjx.put_model(m, impl='jax')
+  # mx = mjx.put_model(m, impl='jax')
   mw = mjx.put_model(m, impl='warp')
 
   if function_ == 'kinematics':
@@ -381,7 +385,7 @@ def _main(_: Sequence[str]):
 
   for name, mx_, op in (
       ('JAX WARP FFI', mw, func_warp),
-      ('Pure JAX', mx, func_jax),
+      # ('Pure JAX', mx, func_jax),
   ):
     if op is not None:
       jit_time, run_time, steps = benchmark(m, mx_, op, nstep, nenv, unroll)
@@ -395,25 +399,27 @@ def _main(_: Sequence[str]):
       )
       print(f' time per step        : {1e6 * run_time / steps:.2f} µs\n')
 
-  jit_time, run_time, steps = benchmark_raw_jax_warp(
-      m, nstep, nenv, unroll, function=function_
-  )
-  print(' Pure JAX-WARP:')
-  print(f' JIT time             : {jit_time:.2f} s')
-  print(f' simulation time      : {run_time:.2f} s')
-  print(f' steps per second     : {steps / run_time:,.0f}')
-  print(f' realtime factor      : {steps * m.opt.timestep / run_time:.2f} x')
-  print(f' time per step        : {1e6 * run_time / steps:.2f} µs\n')
+  del mw
 
-  jit_time, run_time, steps = benchmark_raw_warp(
-      m, nstep, nenv, unroll, function=function_
-  )
-  print(' Pure WARP:')
-  print(f' JIT time             : {jit_time:.2f} s')
-  print(f' simulation time      : {run_time:.2f} s')
-  print(f' steps per second     : {steps / run_time:,.0f}')
-  print(f' realtime factor      : {steps * m.opt.timestep / run_time:.2f} x')
-  print(f' time per step        : {1e6 * run_time / steps:.2f} µs\n')
+  # # jit_time, run_time, steps = benchmark_raw_jax_warp(
+  #     m, nstep, nenv, unroll, function=function_
+  # )
+  # print(' Pure JAX-WARP:')
+  # print(f' JIT time             : {jit_time:.2f} s')
+  # print(f' simulation time      : {run_time:.2f} s')
+  # print(f' steps per second     : {steps / run_time:,.0f}')
+  # print(f' realtime factor      : {steps * m.opt.timestep / run_time:.2f} x')
+  # print(f' time per step        : {1e6 * run_time / steps:.2f} µs\n')
+
+  # jit_time, run_time, steps = benchmark_raw_warp(
+  #     m, nstep, nenv, unroll, function=function_
+  # )
+  # print(' Pure WARP:')
+  # print(f' JIT time             : {jit_time:.2f} s')
+  # print(f' simulation time      : {run_time:.2f} s')
+  # print(f' steps per second     : {steps / run_time:,.0f}')
+  # print(f' realtime factor      : {steps * m.opt.timestep / run_time:.2f} x')
+  # print(f' time per step        : {1e6 * run_time / steps:.2f} µs\n')
 
 
 def main():
