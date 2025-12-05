@@ -716,16 +716,17 @@ class FfiCallable:
                             call_desc.memcpy_dsts[memcpy_idx] = outputs[output_idx].contents.data
                             memcpy_idx += 1
 
-                        # update all memcpy nodes
-                        wp._src.context.runtime.core.wp_cuda_graph_update_memcpy_batch(
-                            graph_exec,
-                            call_desc.memcpy_nodes,
-                            call_desc.memcpy_dsts,
-                            call_desc.memcpy_srcs,
-                            call_desc.memcpy_sizes,
-                            call_desc.memcpy_kinds,
-                            len(call_desc.memcpy_nodes),
-                        )
+                        # update all memcpy nodes (skip if no copies)
+                        if len(call_desc.memcpy_nodes) > 0:
+                            wp._src.context.runtime.core.wp_cuda_graph_update_memcpy_batch(
+                                graph_exec,
+                                call_desc.memcpy_nodes,
+                                call_desc.memcpy_dsts,
+                                call_desc.memcpy_srcs,
+                                call_desc.memcpy_sizes,
+                                call_desc.memcpy_kinds,
+                                len(call_desc.memcpy_nodes),
+                            )
 
                         # launch existing graph
                         if not wp._src.context.runtime.core.wp_cuda_graph_launch(graph_exec, cuda_stream):
@@ -790,6 +791,7 @@ class FfiCallable:
                         # create staging arrays associated with the callback arguments
                         callback_arrays = []
                         staging_arrays = []
+                        staged_input_range = None
                         for i, arg in enumerate(arg_list):
                             if i == self.num_inputs:
                                 # subrange of staging arrays that are inputs (includes in-out args)
@@ -799,6 +801,11 @@ class FfiCallable:
                                 staging_arr = wp.empty_like(arg)
                                 staging_arrays.append(staging_arr)
                                 arg_list[i] = staging_arr
+
+                        # If staged_input_range was not set (no pure outputs, all outputs are in-out),
+                        # then all staging arrays are inputs
+                        if staged_input_range is None:
+                            staged_input_range = range(len(staging_arrays))
 
                         # subrange of staging arrays that are outputs (includes in-out args)
                         staged_output_range = range(staged_input_range.stop - self.num_in_out, len(staging_arrays))
@@ -882,6 +889,7 @@ class FfiCallable:
                         # capturing with WARP using staging buffers
                         callback_arrays = []
                         staging_arrays = []
+                        staged_input_range = None
                         for i, arg in enumerate(arg_list):
                             if i == self.num_inputs:
                                 # subrange of staging arrays that are inputs (includes in-out args)
@@ -892,77 +900,118 @@ class FfiCallable:
                                 staging_arrays.append(staging_arr)
                                 arg_list[i] = staging_arr
 
+                        # If staged_input_range was not set (no pure outputs, all outputs are in-out),
+                        # then all staging arrays are inputs
+                        if staged_input_range is None:
+                            staged_input_range = range(len(staging_arrays))
+
                         # subrange of staging buffers that are outputs (includes in-out args)
                         staged_output_range = range(staged_input_range.stop - self.num_in_out, len(staging_arrays))
 
-                        # prepare input memcpy batch (including in-out arrays)
-                        num_input_copies = len(staged_input_range)
+                        # Build mapping from staging array index to FFI buffer index
+                        staging_to_ffi_input = []
+                        staging_idx_in_staging_arrays = 0
+                        for ffi_idx, arg in enumerate(self.input_args):
+                            if arg.is_array:
+                                staging_to_ffi_input.append(ffi_idx)
+                                staging_idx_in_staging_arrays += 1
+                        staging_to_ffi_output = []
+                        for i in range(self.num_in_out):
+                            staging_to_ffi_output.append(i)
+                        for i in range(len(self.output_args) - self.num_in_out):
+                            staging_to_ffi_output.append(self.num_in_out + i)
+
+                        # Collect non-zero input memcpy data and track FFI indices
+                        input_memcpy_data = []
+                        memcpy_input_ffi_indices = []  # FFI buffer indices for non-zero inputs
+                        for input_idx in staged_input_range:
+                            size = staging_arrays[input_idx].size * type_size_in_bytes(staging_arrays[input_idx].dtype)
+                            if size == 0:
+                                continue
+                            input_memcpy_data.append((
+                                callback_arrays[input_idx].ptr,  # src
+                                staging_arrays[input_idx].ptr,   # dst
+                                size,
+                            ))
+                            memcpy_input_ffi_indices.append(staging_to_ffi_input[input_idx])
+
+                        # prepare input memcpy batch (only non-zero sized)
+                        num_input_copies = len(input_memcpy_data)
                         input_memcpy_nodes = (ctypes.c_void_p * num_input_copies)()
                         input_memcpy_srcs = (ctypes.c_void_p * num_input_copies)()
                         input_memcpy_dsts = (ctypes.c_void_p * num_input_copies)()
                         input_memcpy_sizes = (ctypes.c_size_t * num_input_copies)()
                         input_memcpy_kinds = (ctypes.c_int * num_input_copies)()
-                        for memcpy_idx, input_idx in enumerate(staged_input_range):
-                            size = staging_arrays[input_idx].size * type_size_in_bytes(staging_arrays[input_idx].dtype)
-                            input_memcpy_srcs[memcpy_idx] = callback_arrays[input_idx].ptr
-                            input_memcpy_dsts[memcpy_idx] = staging_arrays[input_idx].ptr
+                        for memcpy_idx, (src, dst, size) in enumerate(input_memcpy_data):
+                            input_memcpy_srcs[memcpy_idx] = src
+                            input_memcpy_dsts[memcpy_idx] = dst
                             input_memcpy_sizes[memcpy_idx] = size
                             input_memcpy_kinds[memcpy_idx] = CudaMemcpyKind.D2D
 
-                        # prepare output memcpy batch
-                        num_output_copies = len(staged_output_range)
+                        # Collect non-zero output memcpy data and track FFI indices
+                        output_memcpy_data = []
+                        memcpy_output_ffi_indices = []  # FFI buffer indices for non-zero outputs
+                        for i, output_idx_in_staging_arrays in enumerate(staged_output_range):
+                            size = staging_arrays[output_idx_in_staging_arrays].size * type_size_in_bytes(staging_arrays[output_idx_in_staging_arrays].dtype)
+                            if size == 0:
+                                continue
+                            output_memcpy_data.append((
+                                staging_arrays[output_idx_in_staging_arrays].ptr,   # src
+                                callback_arrays[output_idx_in_staging_arrays].ptr,  # dst
+                                size,
+                            ))
+                            memcpy_output_ffi_indices.append(staging_to_ffi_output[i])
+
+                        # prepare output memcpy batch (only non-zero sized)
+                        num_output_copies = len(output_memcpy_data)
                         output_memcpy_nodes = (ctypes.c_void_p * num_output_copies)()
                         output_memcpy_srcs = (ctypes.c_void_p * num_output_copies)()
                         output_memcpy_dsts = (ctypes.c_void_p * num_output_copies)()
                         output_memcpy_sizes = (ctypes.c_size_t * num_output_copies)()
                         output_memcpy_kinds = (ctypes.c_int * num_output_copies)()
-                        for memcpy_idx, output_idx in enumerate(staged_output_range):
-                            size = staging_arrays[output_idx].size * type_size_in_bytes(
-                                staging_arrays[output_idx].dtype
-                            )
-                            output_memcpy_srcs[memcpy_idx] = staging_arrays[output_idx].ptr
-                            output_memcpy_dsts[memcpy_idx] = callback_arrays[output_idx].ptr
+                        for memcpy_idx, (src, dst, size) in enumerate(output_memcpy_data):
+                            output_memcpy_srcs[memcpy_idx] = src
+                            output_memcpy_dsts[memcpy_idx] = dst
                             output_memcpy_sizes[memcpy_idx] = size
                             output_memcpy_kinds[memcpy_idx] = CudaMemcpyKind.D2D
 
                         # capture using staging arrays and include memory copies
                         with wp.ScopedCapture() as capture:
-                            # copy inputs
-                            # TODO: check result
-                            wp_cuda_graph_insert_memcpy_batch(
-                                device.context,
-                                cuda_stream,
-                                input_memcpy_dsts,
-                                input_memcpy_srcs,
-                                input_memcpy_sizes,
-                                input_memcpy_kinds,
-                                num_input_copies,
-                                input_memcpy_nodes,
-                            )
+                            # copy inputs (skip if no input copies)
+                            if num_input_copies > 0:
+                                # TODO: check result
+                                wp_cuda_graph_insert_memcpy_batch(
+                                    device.context,
+                                    cuda_stream,
+                                    input_memcpy_dsts,
+                                    input_memcpy_srcs,
+                                    input_memcpy_sizes,
+                                    input_memcpy_kinds,
+                                    num_input_copies,
+                                    input_memcpy_nodes,
+                                )
 
                             self.func(*arg_list)
 
-                            # copy outputs
-                            # TODO: check result
-                            wp_cuda_graph_insert_memcpy_batch(
-                                device.context,
-                                cuda_stream,
-                                output_memcpy_dsts,
-                                output_memcpy_srcs,
-                                output_memcpy_sizes,
-                                output_memcpy_kinds,
-                                num_output_copies,
-                                output_memcpy_nodes,
-                            )
+                            # copy outputs (skip if no output copies)
+                            if num_output_copies > 0:
+                                # TODO: check result
+                                wp_cuda_graph_insert_memcpy_batch(
+                                    device.context,
+                                    cuda_stream,
+                                    output_memcpy_dsts,
+                                    output_memcpy_srcs,
+                                    output_memcpy_sizes,
+                                    output_memcpy_kinds,
+                                    num_output_copies,
+                                    output_memcpy_nodes,
+                                )
 
                         wp.capture_launch(capture.graph)
 
-                        # input and output indices in the FFI callback buffers
-                        call_desc.memcpy_input_indices = []
-                        for i, arg in enumerate(self.input_args):
-                            if arg.is_array:
-                                call_desc.memcpy_input_indices.append(i)
-                        call_desc.memcpy_output_indices = list(range(num_outputs))
+                        # Store FFI indices for non-zero copies only
+                        call_desc.memcpy_input_indices = memcpy_input_ffi_indices
+                        call_desc.memcpy_output_indices = memcpy_output_ffi_indices
 
                         # concatenate input and output memcopy nodes so they can be updated in one call
                         num_nodes = num_input_copies + num_output_copies

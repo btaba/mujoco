@@ -44,8 +44,8 @@ class SmoothTest(parameterized.TestCase):
   def setUp(self):
     super().setUp()
     if mjxw.WARP_INSTALLED:
-      self.tempdir = tempfile.TemporaryDirectory()
-      wp.config.kernel_cache_dir = self.tempdir.name
+      # self.tempdir = tempfile.TemporaryDirectory()
+      wp.config.kernel_cache_dir = '/tmp/wp_kernel_cache'
     np.random.seed(0)
 
   def tearDown(self):

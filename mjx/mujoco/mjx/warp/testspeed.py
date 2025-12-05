@@ -32,6 +32,10 @@ import mujoco.mjx.third_party.mujoco_warp as mjwarp
 import warp as wp
 from mujoco.mjx.third_party.warp._src.jax_experimental import ffi as warp_ffi
 
+# import os
+# os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+# os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+
 _MODELFILE = flags.DEFINE_string(
     'modelfile',
     'humanoid/humanoid.xml',
@@ -93,7 +97,7 @@ def benchmark(
   @jax.vmap
   def init(key):
     d = mjx.make_data(
-        m, impl=mx.impl, nconmax=_NCONMAX.value, njmax=_NJMAX.value
+        m, impl=mx.impl, naconmax=_NACONMAX.value, njmax=_NJMAX.value
     )
     return d
 
@@ -262,7 +266,7 @@ def benchmark_raw_jax_warp(
   d_ = mujoco.MjData(m)
   mw = mjwarp.put_model(m)
   d = mjwarp.put_data(
-      m, d_, nworld=nenv, nconmax=_NCONMAX.value, njmax=_NJMAX.value
+      m, d_, nworld=nenv, naconmax=_NACONMAX.value, njmax=_NJMAX.value
   )
 
   jax_unroll_fn = jax_jit(unroll)
@@ -310,7 +314,7 @@ def benchmark_raw_warp(
 
   mw = mjwarp.put_model(m)
   dw = mjwarp.make_data(
-      m, nworld=nenv, nconmax=_NCONMAX.value, njmax=_NJMAX.value
+      m, nworld=nenv, nconmax=_NACONMAX.value, njmax=_NJMAX.value
   )
 
   if function == 'kinematics':
@@ -353,7 +357,7 @@ def _main(_: Sequence[str]):
   except Exception as _:
     m = mujoco.MjModel.from_xml_path(modelfile)
 
-  mx = mjx.put_model(m, impl='jax')
+  # mx = mjx.put_model(m, impl='jax')
   mw = mjx.put_model(m, impl='warp')
 
   if function_ == 'kinematics':
@@ -381,7 +385,7 @@ def _main(_: Sequence[str]):
 
   for name, mx_, op in (
       ('JAX WARP FFI', mw, func_warp),
-      ('Pure JAX', mx, func_jax),
+      # ('Pure JAX', mx, func_jax),
   ):
     if op is not None:
       jit_time, run_time, steps = benchmark(m, mx_, op, nstep, nenv, unroll)
@@ -395,25 +399,15 @@ def _main(_: Sequence[str]):
       )
       print(f' time per step        : {1e6 * run_time / steps:.2f} µs\n')
 
-  jit_time, run_time, steps = benchmark_raw_jax_warp(
-      m, nstep, nenv, unroll, function=function_
-  )
-  print(' Pure JAX-WARP:')
-  print(f' JIT time             : {jit_time:.2f} s')
-  print(f' simulation time      : {run_time:.2f} s')
-  print(f' steps per second     : {steps / run_time:,.0f}')
-  print(f' realtime factor      : {steps * m.opt.timestep / run_time:.2f} x')
-  print(f' time per step        : {1e6 * run_time / steps:.2f} µs\n')
-
-  jit_time, run_time, steps = benchmark_raw_warp(
-      m, nstep, nenv, unroll, function=function_
-  )
-  print(' Pure WARP:')
-  print(f' JIT time             : {jit_time:.2f} s')
-  print(f' simulation time      : {run_time:.2f} s')
-  print(f' steps per second     : {steps / run_time:,.0f}')
-  print(f' realtime factor      : {steps * m.opt.timestep / run_time:.2f} x')
-  print(f' time per step        : {1e6 * run_time / steps:.2f} µs\n')
+  # jit_time, run_time, steps = benchmark_raw_warp(
+  #     m, nstep, nenv, unroll, function=function_
+  # )
+  # print(' Pure WARP:')
+  # print(f' JIT time             : {jit_time:.2f} s')
+  # print(f' simulation time      : {run_time:.2f} s')
+  # print(f' steps per second     : {steps / run_time:,.0f}')
+  # print(f' realtime factor      : {steps * m.opt.timestep / run_time:.2f} x')
+  # print(f' time per step        : {1e6 * run_time / steps:.2f} µs\n')
 
 
 def main():
