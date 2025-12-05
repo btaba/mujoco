@@ -25,8 +25,9 @@ import jax
 
 import warp as wp
 from warp._src.codegen import get_full_arg_spec, make_full_qualified_name
+from warp._src.context import CudaMemcpyKind
 from warp._src.jax import get_jax_device
-from warp._src.types import array_t, launch_bounds_t, strides_from_shape, type_to_warp
+from warp._src.types import array_t, launch_bounds_t, strides_from_shape, type_size_in_bytes, type_to_warp
 
 from .xla_ffi import *
 
@@ -62,6 +63,8 @@ class GraphMode(IntEnum):
     NONE = 0  # don't capture a graph
     JAX = 1  # let JAX capture a graph
     WARP = 2  # let Warp capture a graph
+    WARP_STAGED = 3  # let Warp capture a graph with staging buffers
+    WARP_STAGED_INCLUSIVE = 4
 
 
 class ModulePreloadMode(IntEnum):
@@ -390,6 +393,7 @@ class FfiKernel:
 class FfiCallDesc:
     def __init__(self, static_inputs):
         self.static_inputs = static_inputs
+        self.capture = None
 
 
 class FfiCallable:
@@ -646,22 +650,86 @@ class FfiCallable:
 
                     # launch existing graph
                     if capture is not None:
-                        # NOTE: We use the native graph API to avoid overhead with obtaining Stream and Device objects in Python.
-                        # This code should match wp.capture_launch().
-                        graph = capture.graph
-                        if graph.graph_exec is None:
-                            g = ctypes.c_void_p()
-                            if not wp._src.context.runtime.core.wp_cuda_graph_create_exec(
-                                graph.device.context, cuda_stream, graph.graph, ctypes.byref(g)
-                            ):
-                                raise RuntimeError(f"Graph creation error: {wp.context.runtime.get_error_string()}")
-                            graph.graph_exec = g
-
-                        if not wp._src.context.runtime.core.wp_cuda_graph_launch(graph.graph_exec, cuda_stream):
+                        graph_exec = capture.graph.graph_exec
+                        if not wp._src.context.runtime.core.wp_cuda_graph_launch(graph_exec, cuda_stream):
                             raise RuntimeError(f"Graph launch error: {wp.context.runtime.get_error_string()}")
 
                         # update the graph cache to keep recently used graphs alive
                         self.captures.move_to_end(capture_key)
+
+                        # early out
+                        return
+
+                elif self.graph_mode == GraphMode.WARP_STAGED:
+                    if call_desc.capture is not None:
+                        graph_exec = call_desc.capture.graph.graph_exec
+                        context = call_desc.capture.graph.device.context
+                        wp_memcpy_batch = wp._src.context.runtime.core.wp_memcpy_batch
+
+                        # set source pointers for input memcopies
+                        for memcpy_idx, input_idx in enumerate(call_desc.memcpy_input_indices):
+                            call_desc.input_memcpy_srcs[memcpy_idx] = inputs[input_idx].contents.data
+
+                        # copy the inputs
+                        wp_memcpy_batch(
+                            context,
+                            call_desc.input_memcpy_dsts,
+                            call_desc.input_memcpy_srcs,
+                            call_desc.input_memcpy_sizes,
+                            len(call_desc.input_memcpy_dsts),
+                            cuda_stream,
+                        )
+
+                        # launch existing graph
+                        if not wp._src.context.runtime.core.wp_cuda_graph_launch(graph_exec, cuda_stream):
+                            raise RuntimeError(f"Graph launch error: {wp.context.runtime.get_error_string()}")
+
+                        # set destination pointers for output memcopies
+                        for idx in call_desc.memcpy_output_indices:
+                            call_desc.output_memcpy_dsts[idx] = outputs[idx].contents.data
+
+                        # copy the outputs
+                        wp_memcpy_batch(
+                            context,
+                            call_desc.output_memcpy_dsts,
+                            call_desc.output_memcpy_srcs,
+                            call_desc.output_memcpy_sizes,
+                            len(call_desc.output_memcpy_dsts),
+                            cuda_stream,
+                        )
+
+                        # early out
+                        return
+
+                elif self.graph_mode == GraphMode.WARP_STAGED_INCLUSIVE:
+                    if call_desc.capture is not None:
+                        graph_exec = call_desc.capture.graph.graph_exec
+
+                        # set source pointers for input memcpy nodes
+                        memcpy_idx = 0
+                        for input_idx in call_desc.memcpy_input_indices:
+                            call_desc.memcpy_srcs[memcpy_idx] = inputs[input_idx].contents.data
+                            memcpy_idx += 1
+
+                        # set destination pointers for output memcpy nodes
+                        for output_idx in call_desc.memcpy_output_indices:
+                            call_desc.memcpy_dsts[memcpy_idx] = outputs[output_idx].contents.data
+                            memcpy_idx += 1
+
+                        # update all memcpy nodes
+                        wp._src.context.runtime.core.wp_cuda_graph_update_memcpy_batch(
+                            graph_exec,
+                            call_desc.memcpy_nodes,
+                            call_desc.memcpy_dsts,
+                            call_desc.memcpy_srcs,
+                            call_desc.memcpy_sizes,
+                            call_desc.memcpy_kinds,
+                            len(call_desc.memcpy_nodes),
+                        )
+
+                        # launch existing graph
+                        if not wp._src.context.runtime.core.wp_cuda_graph_launch(graph_exec, cuda_stream):
+                            raise RuntimeError(f"Graph launch error: {wp.context.runtime.get_error_string()}")
 
                         # early out
                         return
@@ -698,18 +766,230 @@ class FfiCallable:
                         # capturing with JAX
                         with wp.ScopedCapture(external=True) as capture:
                             self.func(*arg_list)
+
                         # keep a reference to the capture object to prevent required modules getting unloaded
                         call_desc.capture = capture
+
                     elif self.graph_mode == GraphMode.WARP:
                         # capturing with WARP
                         with wp.ScopedCapture() as capture:
                             self.func(*arg_list)
                         wp.capture_launch(capture.graph)
+
                         # keep a reference to the capture object and reuse it with same buffers
                         self.captures[capture_key] = capture
+
                         # respect the cache size limit if specified
                         if self._graph_cache_max is not None and len(self.captures) > self._graph_cache_max:
                             self.captures.popitem(last=False)
+
+                    elif self.graph_mode == GraphMode.WARP_STAGED:
+                        # capturing with WARP using staging buffers and memcopies done outside of the graph
+                        wp_memcpy_batch = wp._src.context.runtime.core.wp_memcpy_batch
+
+                        # create staging arrays associated with the callback arguments
+                        callback_arrays = []
+                        staging_arrays = []
+                        for i, arg in enumerate(arg_list):
+                            if i == self.num_inputs:
+                                # subrange of staging arrays that are inputs (includes in-out args)
+                                staged_input_range = range(len(staging_arrays))
+                            if isinstance(arg, wp.array):
+                                callback_arrays.append(arg_list[i])
+                                staging_arr = wp.empty_like(arg)
+                                staging_arrays.append(staging_arr)
+                                arg_list[i] = staging_arr
+
+                        # subrange of staging arrays that are outputs (includes in-out args)
+                        staged_output_range = range(staged_input_range.stop - self.num_in_out, len(staging_arrays))
+
+                        # prepare input memcpy batch (including in-out arrays)
+                        num_input_copies = len(staged_input_range)
+                        input_memcpy_srcs = (ctypes.c_void_p * num_input_copies)()
+                        input_memcpy_dsts = (ctypes.c_void_p * num_input_copies)()
+                        input_memcpy_sizes = (ctypes.c_size_t * num_input_copies)()
+                        for memcpy_idx, input_idx in enumerate(staged_input_range):
+                            size = staging_arrays[input_idx].size * type_size_in_bytes(staging_arrays[input_idx].dtype)
+                            input_memcpy_srcs[memcpy_idx] = callback_arrays[input_idx].ptr
+                            input_memcpy_dsts[memcpy_idx] = staging_arrays[input_idx].ptr
+                            input_memcpy_sizes[memcpy_idx] = size
+
+                        # prepare output memcpy batch
+                        num_output_copies = len(staged_output_range)
+                        output_memcpy_srcs = (ctypes.c_void_p * num_output_copies)()
+                        output_memcpy_dsts = (ctypes.c_void_p * num_output_copies)()
+                        output_memcpy_sizes = (ctypes.c_size_t * num_output_copies)()
+                        for memcpy_idx, output_idx in enumerate(staged_output_range):
+                            size = staging_arrays[output_idx].size * type_size_in_bytes(
+                                staging_arrays[output_idx].dtype
+                            )
+                            output_memcpy_srcs[memcpy_idx] = staging_arrays[output_idx].ptr
+                            output_memcpy_dsts[memcpy_idx] = callback_arrays[output_idx].ptr
+                            output_memcpy_sizes[memcpy_idx] = size
+
+                        # copy inputs to staging buffers (including in-out arrays)
+                        # TODO: check result
+                        wp_memcpy_batch(
+                            device.context,
+                            input_memcpy_dsts,
+                            input_memcpy_srcs,
+                            input_memcpy_sizes,
+                            num_input_copies,
+                            cuda_stream,
+                        )
+
+                        # capture using staging arrays
+                        with wp.ScopedCapture() as capture:
+                            self.func(*arg_list)
+                        wp.capture_launch(capture.graph)
+
+                        # copy outputs from staging buffers (including in-out arrays)
+                        # TODO: check result
+                        wp_memcpy_batch(
+                            device.context,
+                            output_memcpy_dsts,
+                            output_memcpy_srcs,
+                            output_memcpy_sizes,
+                            num_output_copies,
+                            cuda_stream,
+                        )
+
+                        # input and output indices in the FFI callback buffers
+                        call_desc.memcpy_input_indices = []
+                        for i, arg in enumerate(self.input_args):
+                            if arg.is_array:
+                                call_desc.memcpy_input_indices.append(i)
+                        call_desc.memcpy_output_indices = list(range(num_outputs))
+
+                        call_desc.input_memcpy_srcs = input_memcpy_srcs
+                        call_desc.input_memcpy_dsts = input_memcpy_dsts
+                        call_desc.input_memcpy_sizes = input_memcpy_sizes
+                        call_desc.output_memcpy_srcs = output_memcpy_srcs
+                        call_desc.output_memcpy_dsts = output_memcpy_dsts
+                        call_desc.output_memcpy_sizes = output_memcpy_sizes
+
+                        # hang on to the capture and staging arrays to prevent GC
+                        # TODO: we should have a way of freeing this
+                        call_desc.capture = capture
+                        call_desc.staging_arrays = staging_arrays
+
+                    elif self.graph_mode == GraphMode.WARP_STAGED_INCLUSIVE:
+                        # capturing with WARP using staging buffers and memcopies done inside of the graph
+                        wp_cuda_graph_insert_memcpy_batch = (
+                            wp._src.context.runtime.core.wp_cuda_graph_insert_memcpy_batch
+                        )
+
+                        # capturing with WARP using staging buffers
+                        callback_arrays = []
+                        staging_arrays = []
+                        for i, arg in enumerate(arg_list):
+                            if i == self.num_inputs:
+                                # subrange of staging arrays that are inputs (includes in-out args)
+                                staged_input_range = range(len(staging_arrays))
+                            if isinstance(arg, wp.array):
+                                callback_arrays.append(arg_list[i])
+                                staging_arr = wp.empty_like(arg)
+                                staging_arrays.append(staging_arr)
+                                arg_list[i] = staging_arr
+
+                        # subrange of staging buffers that are outputs (includes in-out args)
+                        staged_output_range = range(staged_input_range.stop - self.num_in_out, len(staging_arrays))
+
+                        # prepare input memcpy batch (including in-out arrays)
+                        num_input_copies = len(staged_input_range)
+                        input_memcpy_nodes = (ctypes.c_void_p * num_input_copies)()
+                        input_memcpy_srcs = (ctypes.c_void_p * num_input_copies)()
+                        input_memcpy_dsts = (ctypes.c_void_p * num_input_copies)()
+                        input_memcpy_sizes = (ctypes.c_size_t * num_input_copies)()
+                        input_memcpy_kinds = (ctypes.c_int * num_input_copies)()
+                        for memcpy_idx, input_idx in enumerate(staged_input_range):
+                            size = staging_arrays[input_idx].size * type_size_in_bytes(staging_arrays[input_idx].dtype)
+                            input_memcpy_srcs[memcpy_idx] = callback_arrays[input_idx].ptr
+                            input_memcpy_dsts[memcpy_idx] = staging_arrays[input_idx].ptr
+                            input_memcpy_sizes[memcpy_idx] = size
+                            input_memcpy_kinds[memcpy_idx] = CudaMemcpyKind.D2D
+
+                        # prepare output memcpy batch
+                        num_output_copies = len(staged_output_range)
+                        output_memcpy_nodes = (ctypes.c_void_p * num_output_copies)()
+                        output_memcpy_srcs = (ctypes.c_void_p * num_output_copies)()
+                        output_memcpy_dsts = (ctypes.c_void_p * num_output_copies)()
+                        output_memcpy_sizes = (ctypes.c_size_t * num_output_copies)()
+                        output_memcpy_kinds = (ctypes.c_int * num_output_copies)()
+                        for memcpy_idx, output_idx in enumerate(staged_output_range):
+                            size = staging_arrays[output_idx].size * type_size_in_bytes(
+                                staging_arrays[output_idx].dtype
+                            )
+                            output_memcpy_srcs[memcpy_idx] = staging_arrays[output_idx].ptr
+                            output_memcpy_dsts[memcpy_idx] = callback_arrays[output_idx].ptr
+                            output_memcpy_sizes[memcpy_idx] = size
+                            output_memcpy_kinds[memcpy_idx] = CudaMemcpyKind.D2D
+
+                        # capture using staging arrays and include memory copies
+                        with wp.ScopedCapture() as capture:
+                            # copy inputs
+                            # TODO: check result
+                            wp_cuda_graph_insert_memcpy_batch(
+                                device.context,
+                                cuda_stream,
+                                input_memcpy_dsts,
+                                input_memcpy_srcs,
+                                input_memcpy_sizes,
+                                input_memcpy_kinds,
+                                num_input_copies,
+                                input_memcpy_nodes,
+                            )
+
+                            self.func(*arg_list)
+
+                            # copy outputs
+                            # TODO: check result
+                            wp_cuda_graph_insert_memcpy_batch(
+                                device.context,
+                                cuda_stream,
+                                output_memcpy_dsts,
+                                output_memcpy_srcs,
+                                output_memcpy_sizes,
+                                output_memcpy_kinds,
+                                num_output_copies,
+                                output_memcpy_nodes,
+                            )
+
+                        wp.capture_launch(capture.graph)
+
+                        # input and output indices in the FFI callback buffers
+                        call_desc.memcpy_input_indices = []
+                        for i, arg in enumerate(self.input_args):
+                            if arg.is_array:
+                                call_desc.memcpy_input_indices.append(i)
+                        call_desc.memcpy_output_indices = list(range(num_outputs))
+
+                        # concatenate input and output memcopy nodes so they can be updated in one call
+                        num_nodes = num_input_copies + num_output_copies
+                        call_desc.memcpy_nodes = (ctypes.c_void_p * num_nodes)()
+                        call_desc.memcpy_srcs = (ctypes.c_void_p * num_nodes)()
+                        call_desc.memcpy_dsts = (ctypes.c_void_p * num_nodes)()
+                        call_desc.memcpy_sizes = (ctypes.c_size_t * num_nodes)()
+                        call_desc.memcpy_kinds = (ctypes.c_int * num_nodes)()
+                        for i in range(num_input_copies):
+                            call_desc.memcpy_nodes[i] = input_memcpy_nodes[i]
+                            call_desc.memcpy_srcs[i] = input_memcpy_srcs[i]
+                            call_desc.memcpy_dsts[i] = input_memcpy_dsts[i]
+                            call_desc.memcpy_sizes[i] = input_memcpy_sizes[i]
+                            call_desc.memcpy_kinds[i] = input_memcpy_kinds[i]
+                        for i in range(num_output_copies):
+                            j = i + num_input_copies
+                            call_desc.memcpy_nodes[j] = output_memcpy_nodes[i]
+                            call_desc.memcpy_srcs[j] = output_memcpy_srcs[i]
+                            call_desc.memcpy_dsts[j] = output_memcpy_dsts[i]
+                            call_desc.memcpy_sizes[j] = output_memcpy_sizes[i]
+                            call_desc.memcpy_kinds[j] = output_memcpy_kinds[i]
+
+                        # hang on to the capture and staging arrays to prevent GC
+                        # TODO: we should have a way of freeing this
+                        call_desc.capture = capture
+                        call_desc.staging_arrays = staging_arrays
+
                     else:
                         # not capturing
                         self.func(*arg_list)
