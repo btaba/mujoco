@@ -407,6 +407,8 @@ class FfiCallable:
         vmap_method,
         output_dims,
         in_out_argnames,
+        copy_in_staging_argnames,
+        copy_out_staging_argnames,
         graph_cache_max,
         module_preload_mode,
     ):
@@ -424,6 +426,14 @@ class FfiCallable:
         # LRU cache of graphs captured by Warp
         self._graph_cache_max = graph_cache_max
         self.captures = collections.OrderedDict()
+
+        # Selective staging: None means copy all, else copy only specified
+        self.copy_in_staging_set = (
+            set(copy_in_staging_argnames) if copy_in_staging_argnames else None
+        )
+        self.copy_out_staging_set = (
+            set(copy_out_staging_argnames) if copy_out_staging_argnames else None
+        )
 
         in_out_argnames_list = in_out_argnames or []
         in_out_argnames = set(in_out_argnames_list)
@@ -685,8 +695,8 @@ class FfiCallable:
                             raise RuntimeError(f"Graph launch error: {wp.context.runtime.get_error_string()}")
 
                         # set destination pointers for output memcopies
-                        for idx in call_desc.memcpy_output_indices:
-                            call_desc.output_memcpy_dsts[idx] = outputs[idx].contents.data
+                        for memcpy_idx, output_idx in enumerate(call_desc.memcpy_output_indices):
+                            call_desc.output_memcpy_dsts[memcpy_idx] = outputs[output_idx].contents.data
 
                         # copy the outputs
                         wp_memcpy_batch(
@@ -861,19 +871,69 @@ class FfiCallable:
                             cuda_stream,
                         )
 
-                        # input and output indices in the FFI callback buffers
-                        call_desc.memcpy_input_indices = []
-                        for i, arg in enumerate(self.input_args):
-                            if arg.is_array:
-                                call_desc.memcpy_input_indices.append(i)
-                        call_desc.memcpy_output_indices = list(range(num_outputs))
+                        # Build FILTERED lists for replay phase
+                        # During replay, only copy the subset specified by copy sets
 
-                        call_desc.input_memcpy_srcs = input_memcpy_srcs
-                        call_desc.input_memcpy_dsts = input_memcpy_dsts
-                        call_desc.input_memcpy_sizes = input_memcpy_sizes
-                        call_desc.output_memcpy_srcs = output_memcpy_srcs
-                        call_desc.output_memcpy_dsts = output_memcpy_dsts
-                        call_desc.output_memcpy_sizes = output_memcpy_sizes
+                        # First, build mapping from FFI input index -> staging input index
+                        # (staging arrays only contain array args, FFI buffers contain all)
+                        ffi_to_staging_input = {}
+                        staging_input_idx = 0
+                        for ffi_idx, arg in enumerate(self.input_args):
+                            if arg.is_array:
+                                ffi_to_staging_input[ffi_idx] = staging_input_idx
+                                staging_input_idx += 1
+
+                        # Build filtered input indices and replay memcpy arrays
+                        replay_input_indices = []
+                        for ffi_idx, arg in enumerate(self.input_args):
+                            if not arg.is_array:
+                                continue
+                            if self.copy_in_staging_set is None or arg.name in self.copy_in_staging_set:
+                                replay_input_indices.append(ffi_idx)
+
+                        num_replay_input_copies = len(replay_input_indices)
+                        replay_input_srcs = (ctypes.c_void_p * num_replay_input_copies)()
+                        replay_input_dsts = (ctypes.c_void_p * num_replay_input_copies)()
+                        replay_input_sizes = (ctypes.c_size_t * num_replay_input_copies)()
+                        for memcpy_idx, ffi_idx in enumerate(replay_input_indices):
+                            staging_idx = ffi_to_staging_input[ffi_idx]
+                            replay_input_dsts[memcpy_idx] = staging_arrays[staging_idx].ptr
+                            replay_input_sizes[memcpy_idx] = input_memcpy_sizes[staging_idx]
+
+                        # Build filtered output indices and replay memcpy arrays
+                        replay_output_indices = []
+                        # Build list of in-out input arg indices (in order)
+                        in_out_input_indices = [
+                            i for i, arg in enumerate(self.input_args) if arg.in_out
+                        ]
+                        for ffi_out_idx in range(num_outputs):
+                            if ffi_out_idx < self.num_in_out:
+                                # Get the ffi_out_idx-th in-out input arg
+                                input_idx = in_out_input_indices[ffi_out_idx]
+                                arg = self.input_args[input_idx]
+                            else:
+                                arg = self.output_args[ffi_out_idx - self.num_in_out]
+                            if self.copy_out_staging_set is None or arg.name in self.copy_out_staging_set:
+                                replay_output_indices.append(ffi_out_idx)
+
+                        num_replay_output_copies = len(replay_output_indices)
+                        replay_output_srcs = (ctypes.c_void_p * num_replay_output_copies)()
+                        replay_output_dsts = (ctypes.c_void_p * num_replay_output_copies)()
+                        replay_output_sizes = (ctypes.c_size_t * num_replay_output_copies)()
+                        for memcpy_idx, ffi_out_idx in enumerate(replay_output_indices):
+                            # Output staging arrays start at staged_output_range.start
+                            staging_idx = staged_output_range.start + ffi_out_idx
+                            replay_output_srcs[memcpy_idx] = staging_arrays[staging_idx].ptr
+                            replay_output_sizes[memcpy_idx] = output_memcpy_sizes[ffi_out_idx]
+
+                        call_desc.memcpy_input_indices = replay_input_indices
+                        call_desc.memcpy_output_indices = replay_output_indices
+                        call_desc.input_memcpy_srcs = replay_input_srcs
+                        call_desc.input_memcpy_dsts = replay_input_dsts
+                        call_desc.input_memcpy_sizes = replay_input_sizes
+                        call_desc.output_memcpy_srcs = replay_output_srcs
+                        call_desc.output_memcpy_dsts = replay_output_dsts
+                        call_desc.output_memcpy_sizes = replay_output_sizes
 
                         # hang on to the capture and staging arrays to prevent GC
                         # TODO: we should have a way of freeing this
@@ -921,19 +981,49 @@ class FfiCallable:
                         for i in range(len(self.output_args) - self.num_in_out):
                             staging_to_ffi_output.append(self.num_in_out + i)
 
+                        # INITIAL COPY: Copy ALL inputs to staging buffers before capture
+                        # This ensures even non-filtered staging buffers have valid data
+                        wp_memcpy_batch = wp._src.context.runtime.core.wp_memcpy_batch
+                        num_init_copies = len(staged_input_range)
+                        init_srcs = (ctypes.c_void_p * num_init_copies)()
+                        init_dsts = (ctypes.c_void_p * num_init_copies)()
+                        init_sizes = (ctypes.c_size_t * num_init_copies)()
+                        for idx, staging_idx in enumerate(staged_input_range):
+                            init_srcs[idx] = callback_arrays[staging_idx].ptr
+                            init_dsts[idx] = staging_arrays[staging_idx].ptr
+                            sz = staging_arrays[staging_idx].size
+                            sz *= type_size_in_bytes(staging_arrays[staging_idx].dtype)
+                            init_sizes[idx] = sz
+                        if num_init_copies > 0:
+                            wp_memcpy_batch(
+                                device.context,
+                                init_dsts,
+                                init_srcs,
+                                init_sizes,
+                                num_init_copies,
+                                cuda_stream,
+                            )
+
                         # Collect non-zero input memcpy data and track FFI indices
+                        # Apply selective filtering based on copy_in_staging_set
                         input_memcpy_data = []
                         memcpy_input_ffi_indices = []  # FFI buffer indices for non-zero inputs
                         for input_idx in staged_input_range:
-                            size = staging_arrays[input_idx].size * type_size_in_bytes(staging_arrays[input_idx].dtype)
+                            size = staging_arrays[input_idx].size
+                            size *= type_size_in_bytes(staging_arrays[input_idx].dtype)
                             if size == 0:
+                                continue
+                            ffi_idx = staging_to_ffi_input[input_idx]
+                            arg = self.input_args[ffi_idx]
+                            if (self.copy_in_staging_set is not None and
+                                    arg.name not in self.copy_in_staging_set):
                                 continue
                             input_memcpy_data.append((
                                 callback_arrays[input_idx].ptr,  # src
                                 staging_arrays[input_idx].ptr,   # dst
                                 size,
                             ))
-                            memcpy_input_ffi_indices.append(staging_to_ffi_input[input_idx])
+                            memcpy_input_ffi_indices.append(ffi_idx)
 
                         # prepare input memcpy batch (only non-zero sized)
                         num_input_copies = len(input_memcpy_data)
@@ -949,18 +1039,33 @@ class FfiCallable:
                             input_memcpy_kinds[memcpy_idx] = CudaMemcpyKind.D2D
 
                         # Collect non-zero output memcpy data and track FFI indices
+                        # Apply selective filtering based on copy_out_staging_set
+                        # Build list of in-out input arg indices for correct arg lookup
+                        in_out_input_indices = [
+                            idx for idx, a in enumerate(self.input_args) if a.in_out
+                        ]
                         output_memcpy_data = []
                         memcpy_output_ffi_indices = []  # FFI buffer indices for non-zero outputs
-                        for i, output_idx_in_staging_arrays in enumerate(staged_output_range):
-                            size = staging_arrays[output_idx_in_staging_arrays].size * type_size_in_bytes(staging_arrays[output_idx_in_staging_arrays].dtype)
+                        for i, staging_idx in enumerate(staged_output_range):
+                            size = staging_arrays[staging_idx].size
+                            size *= type_size_in_bytes(staging_arrays[staging_idx].dtype)
                             if size == 0:
                                 continue
+                            ffi_out_idx = staging_to_ffi_output[i]
+                            if ffi_out_idx < self.num_in_out:
+                                input_idx = in_out_input_indices[ffi_out_idx]
+                                arg = self.input_args[input_idx]
+                            else:
+                                arg = self.output_args[ffi_out_idx - self.num_in_out]
+                            if (self.copy_out_staging_set is not None and
+                                    arg.name not in self.copy_out_staging_set):
+                                continue
                             output_memcpy_data.append((
-                                staging_arrays[output_idx_in_staging_arrays].ptr,   # src
-                                callback_arrays[output_idx_in_staging_arrays].ptr,  # dst
+                                staging_arrays[staging_idx].ptr,   # src
+                                callback_arrays[staging_idx].ptr,  # dst
                                 size,
                             ))
-                            memcpy_output_ffi_indices.append(staging_to_ffi_output[i])
+                            memcpy_output_ffi_indices.append(ffi_out_idx)
 
                         # prepare output memcpy batch (only non-zero sized)
                         num_output_copies = len(output_memcpy_data)
@@ -1373,6 +1478,8 @@ def jax_callable(
     vmap_method: Optional[str] = "broadcast_all",
     output_dims=None,
     in_out_argnames=None,
+    copy_in_staging_argnames=None,
+    copy_out_staging_argnames=None,
     graph_cache_max: int | None = None,
     module_preload_mode: ModulePreloadMode = ModulePreloadMode.CURRENT_DEVICE,
 ):
@@ -1448,6 +1555,8 @@ def jax_callable(
                 vmap_method,
                 output_dims,
                 in_out_argnames,
+                copy_in_staging_argnames,
+                copy_out_staging_argnames,
                 graph_cache_max,
                 module_preload_mode,
             )
@@ -1613,3 +1722,4 @@ def get_jax_output_type(arg, dims):
         if ndim != arg.warp_ndim:
             raise ValueError(f"Invalid output dimensions for argument '{arg.name}': {dims}")
         return jax.ShapeDtypeStruct(dims, arg.jax_scalar_type)
+
