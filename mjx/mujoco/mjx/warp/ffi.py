@@ -25,7 +25,7 @@ from jax import numpy as jp
 from mujoco.mjx.warp import types as mjx_warp_types
 import numpy as np
 import warp as wp
-from mujoco.mjx.third_party.warp._src.jax_experimental import ffi
+from warp._src.jax_experimental import ffi
 
 
 def flatten_signature(signature: inspect.Signature, args: Tuple[Any, ...]):
@@ -103,6 +103,8 @@ def jax_callable_variadic_tuple(
     vmap_method: Optional[str] = None,
     output_dims: Optional[dict[str, tuple[int, ...]]] = None,
     in_out_argnames: Optional[Sequence[str]] = None,
+    copy_in_staging_argnames: Optional[Sequence[str]] = None,
+    copy_out_staging_argnames: Optional[Sequence[str]] = None,
 ):
   """Wraps a JAX callable to support variadic tuples and dataclasses."""
 
@@ -132,6 +134,8 @@ def jax_callable_variadic_tuple(
         vmap_method=vmap_method,
         output_dims=output_dims,
         in_out_argnames=in_out_argnames,
+        copy_in_staging_argnames=copy_in_staging_argnames,
+        copy_out_staging_argnames=copy_out_staging_argnames,
     )
 
     flat_args, in_tree = jax.tree.flatten(args)
@@ -414,3 +418,4 @@ def marshal_custom_vmap(vmap_func, raw_output: bool = False):
     return d_result, out_batched
 
   return wrapper
+
