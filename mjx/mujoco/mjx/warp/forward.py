@@ -18,8 +18,8 @@ import dataclasses
 import jax
 from mujoco.mjx._src import types
 from mujoco.mjx.warp import ffi
-import mujoco_warp as mjwarp
-from mujoco_warp._src import types as mjwp_types
+from mujoco.mjx.third_party import mujoco_warp as mjwarp
+from mujoco.mjx.third_party.mujoco_warp._src import types as mjwp_types
 import warp as wp
 
 
