@@ -978,7 +978,7 @@ class FfiCallable:
                         staging_to_ffi_output = []
                         for i in range(self.num_in_out):
                             staging_to_ffi_output.append(i)
-                        for i in range(len(self.output_args) - self.num_in_out):
+                        for i in range(len(self.output_args)):
                             staging_to_ffi_output.append(self.num_in_out + i)
 
                         # INITIAL COPY: Copy ALL inputs to staging buffers before capture
