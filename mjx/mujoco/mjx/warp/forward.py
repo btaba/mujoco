@@ -3264,8 +3264,8 @@ def _step_jax_impl(m: types.Model, d: types.Data):
           'efc__type',
           'efc__vel',
       },
-      copy_in_staging_argnames=_PUBLIC_INPUT_FIELDS,
-      copy_out_staging_argnames=_PUBLIC_DATA_FIELDS,
+      stage_in_argnames=_PUBLIC_INPUT_FIELDS,
+      stage_out_argnames=_PUBLIC_DATA_FIELDS,
   )
   out = jf(
       d.qpos.shape[0],

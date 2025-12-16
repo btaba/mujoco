@@ -98,13 +98,13 @@ def jax_callable_variadic_tuple(
     func: Callable,  # pylint: disable=g-bare-generic
     num_outputs: int = 1,
     # graph_mode: ffi.GraphMode = ffi.GraphMode.WARP,
+    graph_mode: ffi.GraphMode = ffi.GraphMode.WARP_STAGED_EX,
     # graph_mode: ffi.GraphMode = ffi.GraphMode.WARP_STAGED,
-    graph_mode: ffi.GraphMode = ffi.GraphMode.WARP_STAGED_INCLUSIVE,
     vmap_method: Optional[str] = None,
     output_dims: Optional[dict[str, tuple[int, ...]]] = None,
     in_out_argnames: Optional[Sequence[str]] = None,
-    copy_in_staging_argnames: Optional[Sequence[str]] = None,
-    copy_out_staging_argnames: Optional[Sequence[str]] = None,
+    stage_in_argnames: Optional[Sequence[str]] = None,
+    stage_out_argnames: Optional[Sequence[str]] = None,
 ):
   """Wraps a JAX callable to support variadic tuples and dataclasses."""
 
@@ -134,8 +134,8 @@ def jax_callable_variadic_tuple(
         vmap_method=vmap_method,
         output_dims=output_dims,
         in_out_argnames=in_out_argnames,
-        copy_in_staging_argnames=copy_in_staging_argnames,
-        copy_out_staging_argnames=copy_out_staging_argnames,
+        stage_in_argnames=stage_in_argnames,
+        stage_out_argnames=stage_out_argnames,
     )
 
     flat_args, in_tree = jax.tree.flatten(args)
