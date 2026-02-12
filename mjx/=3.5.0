@@ -1,0 +1,12 @@
+Looking in indexes: https://us-python.pkg.dev/artifact-foundry-prod/ah-3p-staging-python/simple/
+Looking in links: https://py.mujoco.org/
+Requirement already satisfied: mujoco in /usr/local/google/home/btaba/.uv_venv/py-312/lib/python3.12/site-packages (3.4.1.dev852634373)
+Requirement already satisfied: absl-py in /usr/local/google/home/btaba/.uv_venv/py-312/lib/python3.12/site-packages (from mujoco) (2.3.1)
+Requirement already satisfied: etils[epath] in /usr/local/google/home/btaba/.uv_venv/py-312/lib/python3.12/site-packages (from mujoco) (1.13.0)
+Requirement already satisfied: glfw in /usr/local/google/home/btaba/.uv_venv/py-312/lib/python3.12/site-packages (from mujoco) (2.10.0)
+Requirement already satisfied: numpy in /usr/local/google/home/btaba/.uv_venv/py-312/lib/python3.12/site-packages (from mujoco) (2.4.0)
+Requirement already satisfied: pyopengl in /usr/local/google/home/btaba/.uv_venv/py-312/lib/python3.12/site-packages (from mujoco) (3.1.10)
+Requirement already satisfied: fsspec in /usr/local/google/home/btaba/.uv_venv/py-312/lib/python3.12/site-packages (from etils[epath]->mujoco) (2025.12.0)
+Requirement already satisfied: importlib_resources in /usr/local/google/home/btaba/.uv_venv/py-312/lib/python3.12/site-packages (from etils[epath]->mujoco) (6.5.2)
+Requirement already satisfied: typing_extensions in /usr/local/google/home/btaba/.uv_venv/py-312/lib/python3.12/site-packages (from etils[epath]->mujoco) (4.15.0)
+Requirement already satisfied: zipp in /usr/local/google/home/btaba/.uv_venv/py-312/lib/python3.12/site-packages (from etils[epath]->mujoco) (3.23.0)

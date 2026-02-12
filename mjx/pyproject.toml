@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name="mujoco-mjx"
-version = "3.5.0"
+version = "3.5.0.dev"
 authors = [
     {name = "Google DeepMind", email = "mujoco@deepmind.com"},
 ]
@@ -29,7 +29,7 @@ dependencies = [
     "etils[epath]",
     "jax",
     "jaxlib",
-    "mujoco>=3.5.0.dev0",
+    "mujoco>=3.5.0.dev",
     "scipy",
     "trimesh",
 ]
