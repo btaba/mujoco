@@ -14,7 +14,6 @@
 # ==============================================================================
 """JAX render utilities for unpacking render output from MuJoCo Warp."""
 
-import typing
 from typing import Any
 
 import jax
@@ -82,3 +81,4 @@ def get_depth(
 
   depth = jnp.clip(raw / depth_scale, 0.0, 1.0)
   return depth.reshape(height, width)
+
