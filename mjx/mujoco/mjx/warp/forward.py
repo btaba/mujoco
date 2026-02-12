@@ -910,6 +910,7 @@ def _forward_shim(
   _d.xpos = xpos
   _d.xquat = xquat
   _d.nworld = nworld
+
   mjwarp.forward(_m, _d)
 
 
@@ -2689,6 +2690,7 @@ def _step_shim(
   _d.xpos = xpos
   _d.xquat = xquat
   _d.nworld = nworld
+
   mjwarp.step(_m, _d)
 
 

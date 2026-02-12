@@ -138,6 +138,7 @@ def _kinematics_shim(
   _d.xpos = xpos
   _d.xquat = xquat
   _d.nworld = nworld
+
   mjwarp.kinematics(_m, _d)
 
 
@@ -371,6 +372,7 @@ def _tendon_shim(
   _d.wrap_obj = wrap_obj
   _d.wrap_xpos = wrap_xpos
   _d.nworld = nworld
+
   mjwarp.tendon(_m, _d)
 
 

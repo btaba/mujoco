@@ -224,6 +224,7 @@ def _collision_shim(
   _d.naconmax = naconmax
   _d.ncollision = ncollision
   _d.nworld = nworld
+
   mjwarp.collision(_m, _d)
 
 

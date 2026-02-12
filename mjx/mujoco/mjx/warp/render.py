@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
 """DO NOT EDIT. This file is auto-generated."""
 
 import dataclasses
@@ -25,7 +24,6 @@ from mujoco.mjx.warp.types import RenderContext
 import mujoco.mjx.third_party.mujoco_warp as mjwarp
 from mujoco.mjx.third_party.mujoco_warp._src import types as mjwp_types
 import warp as wp
-
 
 _m = mjwarp.Model(
     **{f.name: None for f in dataclasses.fields(mjwarp.Model) if f.init}
@@ -195,3 +193,4 @@ def render_vmap(
 ):
   out = render(m, d, ctx)
   return out, [True, True]
+

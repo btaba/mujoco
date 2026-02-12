@@ -16,7 +16,10 @@
 """DO NOT EDIT. This file is auto-generated."""
 
 import dataclasses
+<<<<<<< HEAD
 import functools
+=======
+>>>>>>> 9ae2170d0 (Update mjx-warp render with partial codegen.)
 import jax
 from mujoco.mjx._src import types
 from mujoco.mjx.warp import ffi
