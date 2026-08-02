@@ -1,0 +1,42 @@
+<mujoco model="boxbox vs gjk case 2">
+  <!-- anisotropic boxes: EPA off by ~1e-5, box-box exact to 9e-18.
+       Box pair collides via mjc_BoxBox; the identical box-mesh pair (offset
+       +y) collides via GJK/EPA. Load the keyframe and compare each pair's
+       deepest contact against the true penetration depth
+       (verify_failure_cases.py prints all three). -->
+  <option gravity="0 0 0"/>
+
+  <asset>
+    <mesh name="m1" scale="0.018 0.038 0.047"
+      vertex="-1 -1 -1  1 -1 -1  1 1 -1  1 1 1  1 -1 1  -1 1 -1  -1 1 1  -1 -1 1"/>
+    <mesh name="m2" scale="0.026 0.0014 0.008"
+      vertex="-1 -1 -1  1 -1 -1  1 1 -1  1 1 1  1 -1 1  -1 1 -1  -1 1 1  -1 -1 1"/>
+  </asset>
+
+  <worldbody>
+    <body name="boxA">
+      <freejoint/>
+      <geom type="box" size="0.018 0.038 0.047" contype="1" conaffinity="1" rgba=".2 .6 .9 .7"/>
+    </body>
+    <body name="boxB">
+      <freejoint/>
+      <geom type="box" size="0.026 0.0014 0.008" contype="1" conaffinity="1" rgba=".9 .5 .2 .7"/>
+    </body>
+    <body name="meshA" pos="0 0.6 0">
+      <freejoint/>
+      <geom type="mesh" mesh="m1" contype="2" conaffinity="2" rgba=".2 .6 .9 .7"/>
+    </body>
+    <body name="meshB" pos="0 0.6 0">
+      <freejoint/>
+      <geom type="mesh" mesh="m2" contype="2" conaffinity="2" rgba=".9 .5 .2 .7"/>
+    </body>
+  </worldbody>
+
+  <keyframe>
+    <key name="failure"
+         qpos="0 0 0  -0.54956506190858401 -0.29381180390426431 0.035208375027483994 -0.78128947064699428
+               0.017156021190878595 0.026131536802651449 -0.0083742584759119634  -0.32684576422386241 -0.59079991410801846 -0.62830589382271729 0.38646993632948168
+               0 0.6 0  -0.54956506190858401 -0.29381180390426431 0.035208375027483994 -0.78128947064699428
+               0.017156021190878595 0.62613153680265143 -0.0083742584759119634  -0.32684576422386241 -0.59079991410801846 -0.62830589382271729 0.38646993632948168"/>
+  </keyframe>
+</mujoco>

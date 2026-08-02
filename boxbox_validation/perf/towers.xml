@@ -1,0 +1,24 @@
+<mujoco model="boxbox perf: jittered cube towers">
+  <!-- Six 10-cube towers with a small twist per level resting on a plane;
+       sustained face-face box-box contacts, the resting-stack workload. -->
+  <option timestep="2e-3"/>
+
+  <default>
+    <geom type="box" size=".05 .05 .05"/>
+  </default>
+
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1"/>
+    <geom type="plane" size="3 3 .1"/>
+    <replicate count="3" offset=".4 0 0">
+      <replicate count="2" offset="0 .4 0">
+        <replicate count="10" offset="0 0 .1002" euler="0 0 2">
+          <body pos="-.4 -.2 .0501">
+            <freejoint/>
+            <geom/>
+          </body>
+        </replicate>
+      </replicate>
+    </replicate>
+  </worldbody>
+</mujoco>
