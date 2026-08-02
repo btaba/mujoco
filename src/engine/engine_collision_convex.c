@@ -116,14 +116,30 @@ static int mjc_penetration(const mjModel* m, mjData* d, mjCCDObj* obj1, mjCCDObj
 
   if ((dist = mjc_ccd(&config, &status, obj1, obj2)) < 0) {
     nwitness = status.nx;
-    for (int i = 0; i < nwitness; i++) {
-      con[i].dist = margin + dist;
-      con[i].pos[0] = 0.5*(status.x1[3*i + 0] + status.x2[3*i + 0]);
-      con[i].pos[1] = 0.5*(status.x1[3*i + 1] + status.x2[3*i + 1]);
-      con[i].pos[2] = 0.5*(status.x1[3*i + 2] + status.x2[3*i + 2]);
-      mji_sub3(con[i].normal, status.x1 + 3*i, status.x2 + 3*i);
-      mju_normalize3(con[i].normal);
-      mji_zero3(con[i].tangent);
+
+    // multi-contact patch: the witness pairs carry per-point gaps, measured along the shared
+    // contact direction of the penetration witness pair
+    if (nwitness > 1 && mju_norm3(status.dir) > 0.5) {
+      for (int i = 0; i < nwitness; i++) {
+        mjtNum pair[3];
+        mji_sub3(pair, status.x1 + 3*i, status.x2 + 3*i);
+        con[i].dist = margin - mju_dot3(pair, status.dir);
+        con[i].pos[0] = 0.5*(status.x1[3*i + 0] + status.x2[3*i + 0]);
+        con[i].pos[1] = 0.5*(status.x1[3*i + 1] + status.x2[3*i + 1]);
+        con[i].pos[2] = 0.5*(status.x1[3*i + 2] + status.x2[3*i + 2]);
+        mji_copy3(con[i].normal, status.dir);
+        mji_zero3(con[i].tangent);
+      }
+    } else {
+      for (int i = 0; i < nwitness; i++) {
+        con[i].dist = margin + dist;
+        con[i].pos[0] = 0.5*(status.x1[3*i + 0] + status.x2[3*i + 0]);
+        con[i].pos[1] = 0.5*(status.x1[3*i + 1] + status.x2[3*i + 1]);
+        con[i].pos[2] = 0.5*(status.x1[3*i + 2] + status.x2[3*i + 2]);
+        mji_sub3(con[i].normal, status.x1 + 3*i, status.x2 + 3*i);
+        mju_normalize3(con[i].normal);
+        mji_zero3(con[i].tangent);
+      }
     }
   }
   if (!buffer) {

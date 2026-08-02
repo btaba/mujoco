@@ -141,9 +141,14 @@ int Penetration(mjCCDStatus& status, mjtNum& depth, std::vector<mjtNum>& dir,
     dir.resize(3 * status.nx);
     pos.resize(3 * status.nx);
     for (int i = 0; i < status.nx; ++i) {
-      // compute direction
-      mju_sub3(&dir[3 * i], status.x1 + 3 * i, status.x2 + 3 * i);
-      mju_normalize3(&dir[3 * i]);
+      // compute direction: multi-contact witness pairs carry per-point gaps measured along
+      // the shared contact direction, mirroring mjc_penetration
+      if (status.nx > 1 && mju_norm3(status.dir) > 0.5) {
+        mju_copy3(&dir[3 * i], status.dir);
+      } else {
+        mju_sub3(&dir[3 * i], status.x1 + 3 * i, status.x2 + 3 * i);
+        mju_normalize3(&dir[3 * i]);
+      }
 
       // compute position
       pos[3 * i + 0] = 0.5 * (status.x1[0 + 3 * i] + status.x2[0 + 3 * i]);

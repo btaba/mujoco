@@ -1616,6 +1616,19 @@ static mjtNum planeIntersect(mjtNum res[3], const mjtNum pn[3], mjtNum pd,
 }
 
 
+// witness point on the clipping face for a clipped vertex v: project v onto the face plane
+// along the face normal, so each witness pair carries the per-point gap at that vertex
+static inline void witnessOnFace(mjtNum x1[3], const mjtNum v[3], const mjtNum* face1,
+                                 const mjtNum n[3]) {
+  mjtNum d[3];
+  sub3(d, v, face1);
+  mjtNum g = dot3(d, n);
+  x1[0] = v[0] - g*n[0];
+  x1[1] = v[1] - g*n[1];
+  x1[2] = v[2] - g*n[2];
+}
+
+
 // clip a polygon against another polygon
 static void polygonClip(mjCCDStatus* status, const mjtNum* face1, int nface1,
                         const mjtNum* face2, int nface2, const mjtNum n[3],
@@ -1696,7 +1709,7 @@ static void polygonClip(mjCCDStatus* status, const mjtNum* face1, int nface1,
     polygonQuad(rect, polygon, npolygon);
     for (int i = 0; i < 4; i++) {
       copy3(status->x2 + 3*i, rect[i]);
-      sub3(status->x1 + 3*i, status->x2 + 3*i, dir);
+      witnessOnFace(status->x1 + 3*i, status->x2 + 3*i, face1, n);
     }
     return;
   }
@@ -1719,9 +1732,9 @@ static void polygonClip(mjCCDStatus* status, const mjtNum* face1, int nface1,
       }
     }
     copy3(status->x2, polygon + 3*best1);
-    sub3(status->x1, status->x2, dir);
+    witnessOnFace(status->x1, status->x2, face1, n);
     copy3(status->x2 + 3, polygon + 3*best2);
-    sub3(status->x1 + 3, status->x2 + 3, dir);
+    witnessOnFace(status->x1 + 3, status->x2 + 3, face1, n);
     status->nx = 2;
     return;
   }
@@ -1729,7 +1742,7 @@ static void polygonClip(mjCCDStatus* status, const mjtNum* face1, int nface1,
   // no pruning needed
   for (int i = 0; i < 3*npolygon; i += 3) {
     copy3(status->x2 + i, polygon + i);
-    sub3(status->x1 + i, status->x2 + i, dir);
+    witnessOnFace(status->x1 + i, status->x2 + i, face1, n);
   }
   status->nx = npolygon;
 }
@@ -2232,6 +2245,9 @@ static void multicontact(int nmeshdegmax, int npolygonmax, uint8_t* buffer, Poly
   // face1 is an edge; clip face1 against face2
   if (edgecon1) {
     scl3(approx_dir, n2 + 3*j, -norm3(dir));
+    // shared contact direction measuring the per-point witness gaps; matches the historical
+    // normal convention (the face normal, well-conditioned in single precision)
+    scl3(status->dir, n2 + 3*j, -1);
     polygonClip(status, face2, nface2, face1, nface1, n2 + 3*j, approx_dir, polygon, npolygonmax);
     // x1 and x2 must be flipped as we flipped the faces in polygonClip
     int nx = status->nx;
@@ -2247,12 +2263,14 @@ static void multicontact(int nmeshdegmax, int npolygonmax, uint8_t* buffer, Poly
   // face2 is an edge; clip face2 against face1
   if (edgecon2) {
     scl3(approx_dir, n1 + 3*j, -norm3(dir));
+    copy3(status->dir, n1 + 3*j);
     polygonClip(status, face1, nface1, face2, nface2, n1 + 3*j, approx_dir, polygon, npolygonmax);
     return;
   }
 
   // face-face collision
   scl3(approx_dir, n2 + 3*j, norm3(dir));
+  scl3(status->dir, n2 + 3*j, -1);
   polygonClip(status, face1, nface1, face2, nface2, n1 + 3*i, approx_dir, polygon, npolygonmax);
 }
 
@@ -2312,6 +2330,7 @@ mjtNum mjc_ccd(const mjCCDConfig* config, mjCCDStatus* status, mjCCDObj* obj1, m
   status->gjk_iterations = 0;
   status->epa_iterations = 0;
   status->epa_status = mjEPA_NOCONTACT;
+  status->dir[0] = status->dir[1] = status->dir[2] = 0;
   status->tolerance = config->tolerance;
   status->max_iterations = config->max_iterations;
   status->max_contacts = config->max_contacts;

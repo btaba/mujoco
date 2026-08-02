@@ -85,6 +85,8 @@ typedef struct {
   mjtNum x1[3 * mjMAXCONPAIR];  // witness points for geom 1
   mjtNum x2[3 * mjMAXCONPAIR];  // witness points for geom 2
   int nx;                       // number of witness points
+  mjtNum dir[3];                // unit contact direction from the penetration witness pair
+                                // (multi-contact only, zero otherwise)
 
   // configurations used
   int max_iterations;           // the maximum number of iterations for GJK and EPA
