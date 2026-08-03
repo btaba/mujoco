@@ -1,0 +1,24 @@
+<mujoco model="boxbox stacking demo: perturbed towers">
+  <!-- Three 10-cube towers with pose jitter. Flip the collider flags in the
+       viewer's Option panel:
+
+         default                     new box-box collider: settles quickly
+         Enable "BoxBoxLegacy"       legacy collider: settles, more contacts
+         Disable "BoxBox"            GJK/EPA: persistent jitter, ~2x step cost -->
+  <option timestep="2e-3">
+    <flag contact="enable"/>
+  </option>
+
+  <worldbody>
+    <light pos="2 0 5" dir="-.3 0 -1"/>
+    <geom type="plane" size="10 10 .1" rgba=".9 .9 .9 1"/>
+    <replicate count="3" offset=".5 0 0">
+      <replicate count="10" offset="0 0 .1002" euler="0 0 4">
+        <body pos="-.5 0 .0501">
+          <freejoint/>
+          <geom type="box" size=".05 .05 .05" rgba=".9 .6 .3 1"/>
+        </body>
+      </replicate>
+    </replicate>
+  </worldbody>
+</mujoco>
