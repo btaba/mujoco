@@ -88,3 +88,45 @@ corrects. The box-box collider (and the legacy one) report per-point
 depths matching the analytic gap to float precision in both poses, so the
 proposal's fix converges the convex pipeline toward what the specialized
 collider already produces, at higher cost.
+
+## Head-to-head vs ccd-manifold-depth (Yuval's per-point depth patch)
+
+Commit 25745832 from yuvaltassa/ccd-manifold-depth is cherry-picked onto
+this branch, so the `boxbox="disable"` mode IS the patched convex pipeline.
+All numbers below are measured against it (not the unpatched upstream).
+
+The patch works as proposed: uniform depth stamping and fabricated
+penetration are gone from the EPA manifold (plate_pair.py now shows
+per-point-correct gjk depths), aligned towers settle to machine stillness,
+and the plates scenario improves 500x in settle velocity.
+
+stack_bench.py, 4 simulated seconds, after the patch:
+
+| scenario  | mode | settle_vel | drift  | fallen | us/step |
+|-----------|------|-----------:|-------:|-------:|--------:|
+| cubes30   | new  |    3.4e-09 | 0.0000 |      0 |    89.8 |
+| cubes30   | gjk  |    3.5e-09 | 0.0000 |      0 |   101.8 |
+| perturbed | new  |    1.4e-02 | 0.0090 |      0 |   100.2 |
+| perturbed | gjk  |    1.1e-01 | 0.0131 |      0 |   154.4 |
+| plates    | new  |    2.7e-02 | 0.0002 |      0 |    80.9 |
+| plates    | gjk  |    4.2e-04 | 0.0019 |      0 |    83.0 |
+
+Depth-vs-exact percentiles (search_gjk_failures.py, 10k poses/case):
+
+| case      | collider | median  | p99     | max     |
+|-----------|----------|--------:|--------:|--------:|
+| cube_cube | box-box  | 1.4e-17 | 3.4e-04 | 9.6e-04 |
+| cube_cube | gjk      | 1.9e-09 | 2.1e-09 | 8.1e-07 |
+| aniso     | box-box  | 6.9e-18 | 5.2e-05 | 2.8e-04 |
+| aniso     | gjk      | 8.5e-10 | 2.0e-09 | 2.1e-08 |
+
+Where each wins, after the patch:
+- box-box: median depth exactness (8 orders), step cost (+13-17% towers,
+  +54% perturbed), perturbed-stack quietness (7.6x lower settle velocity,
+  fewer contacts and solver iterations).
+- patched gjk: depth-error p99/max (its 1e-9 tolerance beats box-box's
+  deliberate 5% face-preference tail, which trades near-tie depth for the
+  stack stability above), and plates settle velocity (60x quieter; the
+  4-contact cap is the suspected cause, under investigation).
+- The patch remains valuable for general convex pairs (mesh-mesh), where
+  no specialized collider exists.
