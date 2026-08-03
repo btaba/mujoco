@@ -1134,6 +1134,7 @@ void mjXWriter::Option(XMLElement* root) {
     WRITEDSBL("nativeccd",      mjDSBL_NATIVECCD)
     WRITEDSBL("island",         mjDSBL_ISLAND)
     WRITEDSBL("multiccd",       mjDSBL_MULTICCD)
+    WRITEDSBL("boxbox",         mjDSBL_BOXBOX)
 #undef WRITEDSBL
 
 #define WRITEENBL(NAME, MASK) \
@@ -1145,6 +1146,7 @@ void mjXWriter::Option(XMLElement* root) {
     WRITEENBL("invdiscrete",    mjENBL_INVDISCRETE)
     WRITEENBL("sleep",          mjENBL_SLEEP)
     WRITEENBL("diagexact",      mjENBL_DIAGEXACT)
+    WRITEENBL("boxboxlegacy",   mjENBL_BOXBOXLEGACY)
 #undef WRITEENBL
   }
 

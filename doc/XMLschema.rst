@@ -168,6 +168,9 @@
                :ref:`island<option-flag-island>`
 
             .. grid-item::
+               :ref:`boxbox<option-flag-boxbox>`
+
+            .. grid-item::
                :ref:`override<option-flag-override>`
 
             .. grid-item::
@@ -187,6 +190,9 @@
 
             .. grid-item::
                :ref:`diagexact<option-flag-diagexact>`
+
+            .. grid-item::
+               :ref:`boxboxlegacy<option-flag-boxboxlegacy>`
 
 
    .. dropdown:: :ref:`compiler<compiler>` |*|

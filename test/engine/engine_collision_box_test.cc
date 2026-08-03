@@ -461,5 +461,74 @@ TEST_F(MjCollisionBoxTest, EdgeContactAtDepthBound) {
   }
 }
 
+
+TEST_F(MjCollisionBoxTest, ColliderSelectionFlags) {
+  // deep overlap of rotated cubes: the three colliders produce characteristically
+  // different manifolds (new: at most 4 contacts; legacy: up to 8; convex: 1 + multiCCD)
+  constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom type="box" size=".05 .05 .05"/>
+      <body pos=".03 .02 .08">
+        <freejoint/>
+        <geom type="box" size=".05 .05 .05" euler="30 20 10"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  // default: new collider, at most 4 contacts
+  mj_forward(model.get(), data.get());
+  int ncon_new = data->ncon;
+  EXPECT_GT(ncon_new, 0);
+  EXPECT_LE(ncon_new, 4);
+
+  // legacy collider: same pair, up to 8 contacts, must produce a manifold too
+  model->opt.enableflags |= mjENBL_BOXBOXLEGACY;
+  mj_resetData(model.get(), data.get());
+  mj_forward(model.get(), data.get());
+  int ncon_legacy = data->ncon;
+  EXPECT_GT(ncon_legacy, 0);
+  EXPECT_LE(ncon_legacy, 8);
+  model->opt.enableflags &= ~mjENBL_BOXBOXLEGACY;
+
+  // convex pipeline: box-box routed to GJK/EPA
+  model->opt.disableflags |= mjDSBL_BOXBOX;
+  mj_resetData(model.get(), data.get());
+  mj_forward(model.get(), data.get());
+  int ncon_gjk = data->ncon;
+  EXPECT_GT(ncon_gjk, 0);
+  model->opt.disableflags &= ~mjDSBL_BOXBOX;
+
+  // disabling the specialized collider must take precedence over legacy
+  model->opt.disableflags |= mjDSBL_BOXBOX;
+  model->opt.enableflags |= mjENBL_BOXBOXLEGACY;
+  mj_resetData(model.get(), data.get());
+  mj_forward(model.get(), data.get());
+  EXPECT_EQ(data->ncon, ncon_gjk);
+}
+
+TEST_F(MjCollisionBoxTest, ColliderSelectionFlagsFromXml) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <option>
+      <flag boxbox="disable" boxboxlegacy="enable"/>
+    </option>
+    <worldbody>
+      <geom type="box" size=".05 .05 .05"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  EXPECT_TRUE(model->opt.disableflags & mjDSBL_BOXBOX);
+  EXPECT_TRUE(model->opt.enableflags & mjENBL_BOXBOXLEGACY);
+}
+
 }  // namespace
 }  // namespace mujoco

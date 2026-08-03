@@ -670,6 +670,14 @@ from its default.
    two sequential velocities, and undo the above modification.
 
 
+.. _option-flag-boxbox:
+
+:at:`boxbox`: :at-val:`[disable, enable], "enable"`
+   This flag enables the specialized box-box collider, which computes analytically exact contact depths via the
+   separating-axis test and generates up to four contact points by polygon clipping. When disabled, box-box geom
+   pairs are handled by the general-purpose convex pipeline (GJK/EPA), see :ref:`convex collisions<coCCD>`. Disabling
+   is useful for comparing the two colliders on the same model.
+
 .. _option-flag-multiccd:
 
 :at:`multiccd`: :at-val:`[disable, enable], "enable"`
@@ -691,6 +699,12 @@ from its default.
       **initialization** (:ref:`mj_makeData` or :ref:`mj_resetData`). First, it must be set at initialization time in
       order for the :ref:`sleep-init<body-sleep>` policy to take effect. Second, it must be set in order for static
       quantities to be computed. See :ref:`implementation notes<siSleep>` for more details.
+
+.. _option-flag-boxboxlegacy:
+
+:at:`boxboxlegacy`: :at-val:`[disable, enable], "disable"`
+   This flag selects the legacy box-box collider implementation, preserved for comparison with the current one. It has
+   no effect when the :ref:`boxbox<option-flag-boxbox>` flag is disabled.
 
 .. _option-flag-diagexact:
 

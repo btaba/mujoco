@@ -67,7 +67,8 @@ const char* mjDISABLESTRING[mjNDISABLE] = {
   "AutoReset",
   "NativeCCD",
   "Island",
-  "MultiCCD"
+  "MultiCCD",
+  "BoxBox"
 };
 
 
@@ -78,7 +79,8 @@ const char* mjENABLESTRING[mjNENABLE] = {
   "Fwdinv",
   "InvDiscrete",
   "Sleep",
-  "DiagExact"
+  "DiagExact",
+  "BoxBoxLegacy"
 };
 
 

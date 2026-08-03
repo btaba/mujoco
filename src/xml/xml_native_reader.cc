@@ -191,8 +191,8 @@ std::vector<const char*> MJCF[nMJCF] = {
         {"flag", "?", "constraint", "equality", "frictionloss", "limit", "contact",
             "spring", "damper", "gravity", "clampctrl", "warmstart", "filterparent", "actuation",
             "refsafe", "sensor", "midphase", "eulerdamp", "autoreset", "nativeccd", "island",
-            "override", "energy", "fwdinv", "invdiscrete", "multiccd", "sleep",
-            "diagexact"},
+            "boxbox", "override", "energy", "fwdinv", "invdiscrete", "multiccd", "sleep",
+            "diagexact", "boxboxlegacy"},
     {">"},
 
     {"size", "*", "memory", "njmax", "nconmax", "nstack", "nuserdata", "nkey",
@@ -1419,6 +1419,7 @@ void mjXReader::Option(XMLElement* section, mjSpec* s, mjOption* opt) {
     READDSBL("nativeccd",    mjDSBL_NATIVECCD)
     READDSBL("island",       mjDSBL_ISLAND)
     READDSBL("multiccd",     mjDSBL_MULTICCD)
+    READDSBL("boxbox",       mjDSBL_BOXBOX)
 #undef READDSBL
 
 #define READENBL(NAME, MASK)                       \
@@ -1432,8 +1433,9 @@ void mjXReader::Option(XMLElement* section, mjSpec* s, mjOption* opt) {
     READENBL("energy",      mjENBL_ENERGY)
     READENBL("fwdinv",      mjENBL_FWDINV)
     READENBL("invdiscrete", mjENBL_INVDISCRETE)
-    READENBL("sleep",       mjENBL_SLEEP)
-    READENBL("diagexact",   mjENBL_DIAGEXACT)
+    READENBL("sleep",        mjENBL_SLEEP)
+    READENBL("diagexact",    mjENBL_DIAGEXACT)
+    READENBL("boxboxlegacy", mjENBL_BOXBOXLEGACY)
 #undef READENBL
   }
 }

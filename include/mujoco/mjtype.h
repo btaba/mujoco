@@ -71,8 +71,9 @@ typedef enum mjtDisableBit {      // disable default feature bitflags
   mjDSBL_NATIVECCD    = 1<<17,    // native convex collision detection
   mjDSBL_ISLAND       = 1<<18,    // constraint island discovery
   mjDSBL_MULTICCD     = 1<<19,    // multiple CCD contact points
+  mjDSBL_BOXBOX       = 1<<20,    // specialized box-box collider (fall back to convex CCD)
 
-  mjNDISABLE          = 20        // number of disable flags
+  mjNDISABLE          = 21        // number of disable flags
 } mjtDisableBit;
 
 
@@ -83,8 +84,9 @@ typedef enum mjtEnableBit {       // enable optional feature bitflags
   mjENBL_INVDISCRETE  = 1<<3,     // discrete-time inverse dynamics
   mjENBL_SLEEP        = 1<<4,     // sleeping
   mjENBL_DIAGEXACT    = 1<<5,     // exact diagonal of constraint inertia
+  mjENBL_BOXBOXLEGACY = 1<<6,     // legacy box-box collider
 
-  mjNENABLE           = 6         // number of enable flags
+  mjNENABLE           = 7         // number of enable flags
 } mjtEnableBit;
 
 
