@@ -14,8 +14,6 @@
 # Run verify_failure_cases.py to print them.
 import os
 
-MESH_OFFSET_Y = 0.6
-
 # (size1, size2, pos2, quat1, quat2, note)
 CASES = [
     ((0.018, 0.038, 0.047), (0.026, 0.0014, 0.008),
@@ -48,46 +46,27 @@ CASES = [
      "cubes: EPA at its 2e-9 tolerance floor, box-box exact to 2e-17"),
 ]
 
-TEMPLATE = """<mujoco model="boxbox vs gjk case {idx}">
+TEMPLATE = """<mujoco model="boxbox accuracy case {idx}">
   <!-- {note}.
-       Box pair collides via mjc_BoxBox; the identical box-mesh pair (offset
-       +y) collides via GJK/EPA. Load the keyframe and compare each pair's
-       deepest contact against the true penetration depth
-       (verify_failure_cases.py prints all three). -->
-  <option gravity="0 0 0"/>
-
-  <asset>
-    <mesh name="m1" scale="{s1x} {s1y} {s1z}"
-      vertex="-1 -1 -1  1 -1 -1  1 1 -1  1 1 1  1 -1 1  -1 1 -1  -1 1 1  -1 -1 1"/>
-    <mesh name="m2" scale="{s2x} {s2y} {s2z}"
-      vertex="-1 -1 -1  1 -1 -1  1 1 -1  1 1 1  1 -1 1  -1 1 -1  -1 1 1  -1 -1 1"/>
-  </asset>
+       One box pair; switch the collider with the "BoxBox" dropdown in the
+       viewer's Option panel (New / Legacy / Convex) or the boxbox attribute
+       below. Load keyframe 0 to pose the pair; verify_failure_cases.py
+       prints each mode's deepest contact against the exact depth. -->
+  <option gravity="0 0 0" boxbox="new"/>
 
   <worldbody>
     <body name="boxA">
       <freejoint/>
-      <geom type="box" size="{s1x} {s1y} {s1z}" contype="1" conaffinity="1" rgba=".2 .6 .9 .7"/>
+      <geom type="box" size="{s1x} {s1y} {s1z}" rgba=".2 .6 .9 .7"/>
     </body>
     <body name="boxB">
       <freejoint/>
-      <geom type="box" size="{s2x} {s2y} {s2z}" contype="1" conaffinity="1" rgba=".9 .5 .2 .7"/>
-    </body>
-    <body name="meshA" pos="0 {offy} 0">
-      <freejoint/>
-      <geom type="mesh" mesh="m1" contype="2" conaffinity="2" rgba=".2 .6 .9 .7"/>
-    </body>
-    <body name="meshB" pos="0 {offy} 0">
-      <freejoint/>
-      <geom type="mesh" mesh="m2" contype="2" conaffinity="2" rgba=".9 .5 .2 .7"/>
+      <geom type="box" size="{s2x} {s2y} {s2z}" rgba=".9 .5 .2 .7"/>
     </body>
   </worldbody>
 
   <keyframe>
-    <key name="failure"
-         qpos="0 0 0  {q1}
-               {p2}  {q2}
-               0 {offy} 0  {q1}
-               {p2y}  {q2}"/>
+    <key name="failure" qpos="0 0 0  {q1}  {p2}  {q2}"/>
   </keyframe>
 </mujoco>
 """
@@ -102,13 +81,11 @@ def main():
                         "failure_cases")
   os.makedirs(outdir, exist_ok=True)
   for i, (s1, s2, pos2, q1, q2, note) in enumerate(CASES, 1):
-    p2y = (pos2[0], pos2[1] + MESH_OFFSET_Y, pos2[2])
     xml = TEMPLATE.format(
         idx=i, note=note,
         s1x=s1[0], s1y=s1[1], s1z=s1[2],
         s2x=s2[0], s2y=s2[1], s2z=s2[2],
-        offy=MESH_OFFSET_Y,
-        q1=fmt(q1), q2=fmt(q2), p2=fmt(pos2), p2y=fmt(p2y))
+        q1=fmt(q1), q2=fmt(q2), p2=fmt(pos2))
     path = os.path.join(outdir, f"case{i}.xml")
     with open(path, "w") as f:
       f.write(xml)

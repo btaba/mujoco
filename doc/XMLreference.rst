@@ -395,6 +395,15 @@ adjust it properly through the XML.
    Implicit-in-velocity Euler method, and :at:`implicitfast`, which drops the Coriolis and centrifugal terms. See
    :ref:`Numerical Integration<geIntegration>` for more details.
 
+.. _option-boxbox:
+
+:at:`boxbox`: :at-val:`[new, legacy, convex], "new"`
+   Selects the collider used for box-box geom pairs. :at-val:`new` is the current specialized collider (separating-axis
+   test with polygon clipping, at most four analytically exact contact points). :at-val:`legacy` is the previous
+   implementation, preserved for comparison. :at-val:`convex` routes box-box pairs through the general-purpose convex
+   pipeline (GJK/EPA) used by mesh geoms, see :ref:`convex collisions<coCCD>`. This option exists to make the three
+   behaviors directly comparable on the same model, including interactively from the simulate viewer.
+
 .. _option-cone:
 
 :at:`cone`: :at-val:`[pyramidal, elliptic], "pyramidal"`
@@ -670,14 +679,6 @@ from its default.
    two sequential velocities, and undo the above modification.
 
 
-.. _option-flag-boxbox:
-
-:at:`boxbox`: :at-val:`[disable, enable], "enable"`
-   This flag enables the specialized box-box collider, which computes analytically exact contact depths via the
-   separating-axis test and generates up to four contact points by polygon clipping. When disabled, box-box geom
-   pairs are handled by the general-purpose convex pipeline (GJK/EPA), see :ref:`convex collisions<coCCD>`. Disabling
-   is useful for comparing the two colliders on the same model.
-
 .. _option-flag-multiccd:
 
 :at:`multiccd`: :at-val:`[disable, enable], "enable"`
@@ -699,12 +700,6 @@ from its default.
       **initialization** (:ref:`mj_makeData` or :ref:`mj_resetData`). First, it must be set at initialization time in
       order for the :ref:`sleep-init<body-sleep>` policy to take effect. Second, it must be set in order for static
       quantities to be computed. See :ref:`implementation notes<siSleep>` for more details.
-
-.. _option-flag-boxboxlegacy:
-
-:at:`boxboxlegacy`: :at-val:`[disable, enable], "disable"`
-   This flag selects the legacy box-box collider implementation, preserved for comparison with the current one. It has
-   no effect when the :ref:`boxbox<option-flag-boxbox>` flag is disabled.
 
 .. _option-flag-diagexact:
 

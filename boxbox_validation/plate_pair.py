@@ -29,9 +29,7 @@ POSES = {
 
 XML = """
 <mujoco>
-  <option gravity="0 0 0">
-    <flag {flag}/>
-  </option>
+  <option gravity="0 0 0" boxbox="{mode}"/>
   <worldbody>
     <body>
       <freejoint/>
@@ -45,11 +43,7 @@ XML = """
 </mujoco>
 """
 
-MODES = {
-    "new": 'contact="enable"',
-    "legacy": 'boxboxlegacy="enable"',
-    "gjk": 'boxbox="disable"',
-}
+MODES = {"new": "new", "legacy": "legacy", "gjk": "convex"}
 
 
 def exact_gap(model, data, pos):
@@ -69,8 +63,8 @@ def exact_gap(model, data, pos):
 def main():
   for pose_name, z in POSES.items():
     print(f"=== {pose_name} ===")
-    for mode, flag in MODES.items():
-      model = mujoco.MjModel.from_xml_string(XML.format(flag=flag, z=z))
+    for mode, attr in MODES.items():
+      model = mujoco.MjModel.from_xml_string(XML.format(mode=attr, z=z))
       data = mujoco.MjData(model)
       mujoco.mj_forward(model, data)
       print(f"[{mode}] ncon={data.ncon}")

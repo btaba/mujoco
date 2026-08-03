@@ -1,42 +1,23 @@
-<mujoco model="boxbox vs gjk case 4">
+<mujoco model="boxbox accuracy case 4">
   <!-- cubes: EPA at its 2e-9 tolerance floor, box-box exact to 2e-17.
-       Box pair collides via mjc_BoxBox; the identical box-mesh pair (offset
-       +y) collides via GJK/EPA. Load the keyframe and compare each pair's
-       deepest contact against the true penetration depth
-       (verify_failure_cases.py prints all three). -->
-  <option gravity="0 0 0"/>
-
-  <asset>
-    <mesh name="m1" scale="0.05 0.05 0.05"
-      vertex="-1 -1 -1  1 -1 -1  1 1 -1  1 1 1  1 -1 1  -1 1 -1  -1 1 1  -1 -1 1"/>
-    <mesh name="m2" scale="0.05 0.05 0.05"
-      vertex="-1 -1 -1  1 -1 -1  1 1 -1  1 1 1  1 -1 1  -1 1 -1  -1 1 1  -1 -1 1"/>
-  </asset>
+       One box pair; switch the collider with the "BoxBox" dropdown in the
+       viewer's Option panel (New / Legacy / Convex) or the boxbox attribute
+       below. Load keyframe 0 to pose the pair; verify_failure_cases.py
+       prints each mode's deepest contact against the exact depth. -->
+  <option gravity="0 0 0" boxbox="new"/>
 
   <worldbody>
     <body name="boxA">
       <freejoint/>
-      <geom type="box" size="0.05 0.05 0.05" contype="1" conaffinity="1" rgba=".2 .6 .9 .7"/>
+      <geom type="box" size="0.05 0.05 0.05" rgba=".2 .6 .9 .7"/>
     </body>
     <body name="boxB">
       <freejoint/>
-      <geom type="box" size="0.05 0.05 0.05" contype="1" conaffinity="1" rgba=".9 .5 .2 .7"/>
-    </body>
-    <body name="meshA" pos="0 0.6 0">
-      <freejoint/>
-      <geom type="mesh" mesh="m1" contype="2" conaffinity="2" rgba=".2 .6 .9 .7"/>
-    </body>
-    <body name="meshB" pos="0 0.6 0">
-      <freejoint/>
-      <geom type="mesh" mesh="m2" contype="2" conaffinity="2" rgba=".9 .5 .2 .7"/>
+      <geom type="box" size="0.05 0.05 0.05" rgba=".9 .5 .2 .7"/>
     </body>
   </worldbody>
 
   <keyframe>
-    <key name="failure"
-         qpos="0 0 0  -0.69846322893470969 -0.41953183138801098 -0.45185191600467484 -0.36327951536141584
-               0.079416057770312562 0.012804067033715776 0.086943957269539587  0.45129045595650591 0.82412907275582903 -0.05629499174977122 -0.33760786380811686
-               0 0.6 0  -0.69846322893470969 -0.41953183138801098 -0.45185191600467484 -0.36327951536141584
-               0.079416057770312562 0.6128040670337157 0.086943957269539587  0.45129045595650591 0.82412907275582903 -0.05629499174977122 -0.33760786380811686"/>
+    <key name="failure" qpos="0 0 0  -0.69846322893470969 -0.41953183138801098 -0.45185191600467484 -0.36327951536141584  0.079416057770312562 0.012804067033715776 0.086943957269539587  0.45129045595650591 0.82412907275582903 -0.05629499174977122 -0.33760786380811686"/>
   </keyframe>
 </mujoco>

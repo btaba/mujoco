@@ -258,6 +258,15 @@ Numerical integrator types. These values are used in ``m->opt.integrator``.
 
 .. mujoco-include:: mjtIntegrator
 
+.. _mjtBoxBoxImpl:
+
+mjtBoxBoxImpl
+~~~~~~~~~~~~~
+
+Box-box collider implementations. These values are used in ``m->opt.boxbox``.
+
+.. mujoco-include:: mjtBoxBoxImpl
+
 .. _mjtCone:
 
 mjtCone

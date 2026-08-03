@@ -109,6 +109,7 @@ typedef struct mjOption_ {        // physics options
 
   // discrete settings
   int integrator;                 // integration mode (mjtIntegrator)
+  int boxbox;                     // box-box collider implementation (mjtBoxBoxImpl)
   int cone;                       // type of friction cone (mjtCone)
   int jacobian;                   // type of Jacobian (mjtJacobian)
   int solver;                     // solver algorithm (mjtSolver)

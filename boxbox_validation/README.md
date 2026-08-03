@@ -42,15 +42,11 @@ which builds the reference revision in a temporary worktree, builds the
 current checkout, and reports testspeed's microseconds per step for both on
 each scene.
 
-## Collider selection flags
+## Collider selection
 
-Two option flags select the box-box collider at runtime (checkboxes in the
-simulate viewer's Option panel, or XML):
-
-- default: the current specialized collider
-- `<flag boxboxlegacy="enable"/>`: the pre-rewrite legacy collider
-- `<flag boxbox="disable"/>`: route box-box pairs to the general convex
-  pipeline (GJK/EPA); takes precedence over `boxboxlegacy`
+`mjOption.boxbox` selects the box-box collider -- one control, three states:
+`<option boxbox="new|legacy|convex"/>` in XML, or the `BoxBox` dropdown next
+to Integrator in the simulate viewer's Option panel.
 
 ## Stacking demo: `stacking_demo/`
 

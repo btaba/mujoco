@@ -4,9 +4,9 @@
 # iterations, microseconds per step).
 #
 # Modes are selected with the collider flags:
-#   new    -- default (specialized box-box collider)
-#   legacy -- <flag boxboxlegacy="enable"/>
-#   gjk    -- <flag boxbox="disable"/> (general convex pipeline, GJK/EPA)
+#   new    -- <option boxbox="new"/> (default, specialized box-box collider)
+#   legacy -- <option boxbox="legacy"/>
+#   gjk    -- <option boxbox="convex"/> (general convex pipeline, GJK/EPA)
 #
 # Usage: python stack_bench.py [sim_seconds]
 import sys
@@ -31,9 +31,7 @@ def tower_xml(n, size, jitter_deg, jitter_xy, nrow=1):
           f'</body>')
   return f"""
 <mujoco>
-  <option timestep="2e-3">
-    <flag {{flag}}/>
-  </option>
+  <option timestep="2e-3" boxbox="{{mode}}"/>
   <worldbody>
     <geom type="plane" size="10 10 .1"/>
     {''.join(bodies)}
@@ -49,11 +47,7 @@ SCENARIOS = {
     "plates":     tower_xml(8, (0.08, 0.08, 0.008), 3, 0.004, nrow=3),
 }
 
-MODES = {
-    "new": 'contact="enable"',              # no-op attribute: defaults
-    "legacy": 'boxboxlegacy="enable"',
-    "gjk": 'boxbox="disable"',
-}
+MODES = {"new": "new", "legacy": "legacy", "gjk": "convex"}
 
 
 def run(xml, sim_seconds):
@@ -87,8 +81,8 @@ def main():
   print(f"{'scenario':<11}{'mode':<8}{'settle_vel':>11}{'drift':>9}"
         f"{'fallen':>7}{'ncon':>6}{'iters':>6}{'us/step':>9}")
   for name, xml in SCENARIOS.items():
-    for mode, flag in MODES.items():
-      r = run(xml.format(flag=flag), sim_seconds)
+    for mode, attr in MODES.items():
+      r = run(xml.format(mode=attr), sim_seconds)
       print(f"{name:<11}{mode:<8}{r['settle_vel']:>11.2e}{r['drift']:>9.4f}"
             f"{r['fallen']:>7}{r['ncon']:>6}{r['iters']:>6}{r['us']:>9.1f}")
     print()

@@ -1084,6 +1084,8 @@ void mjXWriter::Option(XMLElement* root) {
 
   WriteAttrKey(section, "integrator", integrator_map, integrator_sz,
                model->option.integrator, opt.integrator);
+  WriteAttrKey(section, "boxbox", boxbox_map, boxbox_sz,
+               model->option.boxbox, opt.boxbox);
   WriteAttrKey(section, "cone", cone_map, cone_sz,
                model->option.cone, opt.cone);
   WriteAttrKey(section, "jacobian", jac_map, jac_sz,
@@ -1134,7 +1136,6 @@ void mjXWriter::Option(XMLElement* root) {
     WRITEDSBL("nativeccd",      mjDSBL_NATIVECCD)
     WRITEDSBL("island",         mjDSBL_ISLAND)
     WRITEDSBL("multiccd",       mjDSBL_MULTICCD)
-    WRITEDSBL("boxbox",         mjDSBL_BOXBOX)
 #undef WRITEDSBL
 
 #define WRITEENBL(NAME, MASK) \
@@ -1146,7 +1147,6 @@ void mjXWriter::Option(XMLElement* root) {
     WRITEENBL("invdiscrete",    mjENBL_INVDISCRETE)
     WRITEENBL("sleep",          mjENBL_SLEEP)
     WRITEENBL("diagexact",      mjENBL_DIAGEXACT)
-    WRITEENBL("boxboxlegacy",   mjENBL_BOXBOXLEGACY)
 #undef WRITEENBL
   }
 

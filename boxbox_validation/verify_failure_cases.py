@@ -1,7 +1,6 @@
-# Verifies the failure-case models: for each keyframed pose, prints the true
-# penetration depth (dense direction sweep over support separations, exact for
-# boxes in the limit), the box-box collider's deepest contact, and GJK/EPA's
-# deepest contact on the identical mesh pair.
+# Verifies the accuracy-case models: for each keyframed pose, prints the
+# exact penetration depth and each collider mode's deepest contact
+# (mjOption.boxbox: new / legacy / convex).
 import glob
 import os
 
@@ -40,32 +39,36 @@ def deepest(data, gset):
   return d
 
 
+MODES = {"new": 0, "legacy": 1, "convex": 2}
+
+
 def main():
   here = os.path.dirname(os.path.abspath(__file__))
   paths = sorted(glob.glob(os.path.join(here, "failure_cases", "case*.xml")))
-  print(f"{'case':<10}{'true depth':>14}{'boxbox':>14}{'gjk/epa':>14}"
-        f"{'boxbox err':>13}{'gjk err':>13}")
+  hdr = "".join(f"{m:>13}{m + ' err':>13}" for m in MODES)
+  print(f"{'case':<10}{'exact depth':>13}{hdr}")
   for path in paths:
     model = mujoco.MjModel.from_xml_path(path)
     data = mujoco.MjData(model)
     mujoco.mj_resetDataKeyframe(model, data, 0)
     mujoco.mj_forward(model, data)
-
     true_sep = brute_force_sep(
         model.geom_size[0], model.geom_size[1],
         data.geom_xpos[0], data.geom_xmat[0],
         data.geom_xpos[1], data.geom_xmat[1])
-    db = deepest(data, {0, 1})
-    dg = deepest(data, {2, 3})
-    name = os.path.basename(path)
-    if db is None or dg is None:
-      print(f"{name:<10}{true_sep:>14.6f}{str(db):>14}{str(dg):>14}"
-            f"  (missing contact)")
-      continue
-    print(f"{name:<10}{true_sep:>14.6f}{db:>14.6f}{dg:>14.6f}"
-          f"{abs(db - true_sep):>13.2e}{abs(dg - true_sep):>13.2e}")
-  print("\nerr columns: absolute deviation of each method's deepest contact "
-        "from the true depth.")
+    row = f"{os.path.basename(path):<10}{true_sep:>13.6f}"
+    for mode, val in MODES.items():
+      model.opt.boxbox = val
+      mujoco.mj_resetDataKeyframe(model, data, 0)
+      mujoco.mj_forward(model, data)
+      db = deepest(data, {0, 1})
+      if db is None:
+        row += f"{'---':>13}{'---':>13}"
+      else:
+        row += f"{db:>13.6f}{abs(db - true_sep):>13.2e}"
+    print(row)
+  print("\nerr columns: absolute deviation of each mode's deepest contact "
+        "from the exact depth.")
 
 
 if __name__ == "__main__":

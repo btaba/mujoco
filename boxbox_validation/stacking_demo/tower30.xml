@@ -1,18 +1,13 @@
 <mujoco model="boxbox stacking demo: 30-cube tower">
-  <!-- Load in the simulate viewer and run. Flip the collider in the Option
-       panel (or edit the flag below) to compare all three behaviors:
+  <!-- Load in the simulate viewer and run. Select the collider with the
+       "BoxBox" dropdown in the Option panel (or the boxbox attribute below):
 
-         default                     new box-box collider: tower stands still
-         Enable "BoxBoxLegacy"       legacy collider: tower collapses
-         Disable "BoxBox"            GJK/EPA convex pipeline: stands, slower,
-                                     residual creep
+         New     current box-box collider: tower stands still
+         Legacy  legacy collider: tower collapses
+         Convex  GJK/EPA convex pipeline
 
-       XML equivalents:
-         <flag boxboxlegacy="enable"/>
-         <flag boxbox="disable"/>                                        -->
-  <option timestep="2e-3">
-    <flag contact="enable"/>
-  </option>
+       Press Backspace to reset after switching. -->
+  <option timestep="2e-3" boxbox="new"/>
 
   <visual>
     <global azimuth="120" elevation="-15"/>

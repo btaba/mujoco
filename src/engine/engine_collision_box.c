@@ -1607,12 +1607,12 @@ static int mjc_BoxBoxLegacy(const mjModel* m, mjData* d, mjPreContact* con,
 
 // box : box
 int mjc_BoxBox(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, mjtNum margin) {
-  // optional collider selection: mjDSBL_BOXBOX routes box-box pairs to the generic convex
-  // pipeline (GJK/EPA), mjENBL_BOXBOXLEGACY selects the legacy implementation
-  if (mjDISABLED(mjDSBL_BOXBOX)) {
+  // collider selection via mjOption.boxbox: the legacy implementation and the general
+  // convex pipeline (GJK/EPA) are available for comparison
+  if (m->opt.boxbox == mjBOXBOX_CONVEX) {
     return mjc_Convex(m, d, con, g1, g2, margin);
   }
-  if (mjENABLED(mjENBL_BOXBOXLEGACY)) {
+  if (m->opt.boxbox == mjBOXBOX_LEGACY) {
     return mjc_BoxBoxLegacy(m, d, con, g1, g2, margin);
   }
 

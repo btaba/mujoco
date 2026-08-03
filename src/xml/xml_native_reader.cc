@@ -184,15 +184,15 @@ std::vector<const char*> MJCF[nMJCF] = {
         "timestep", "impratio", "tolerance", "ls_tolerance", "noslip_tolerance",
         "ccd_tolerance", "sleep_tolerance", "gravity", "wind", "magnetic", "density", "viscosity",
         "o_margin", "o_solref", "o_solimp", "o_friction",
-        "integrator", "cone", "jacobian",
+        "integrator", "boxbox", "cone", "jacobian",
         "solver", "iterations", "ls_iterations", "noslip_iterations", "ccd_iterations",
         "sdf_iterations", "sdf_initpoints", "actuatorgroupdisable"},
     {"<"},
         {"flag", "?", "constraint", "equality", "frictionloss", "limit", "contact",
             "spring", "damper", "gravity", "clampctrl", "warmstart", "filterparent", "actuation",
             "refsafe", "sensor", "midphase", "eulerdamp", "autoreset", "nativeccd", "island",
-            "boxbox", "override", "energy", "fwdinv", "invdiscrete", "multiccd", "sleep",
-            "diagexact", "boxboxlegacy"},
+            "override", "energy", "fwdinv", "invdiscrete", "multiccd", "sleep",
+            "diagexact"},
     {">"},
 
     {"size", "*", "memory", "njmax", "nconmax", "nstack", "nuserdata", "nkey",
@@ -742,6 +742,15 @@ const mjMap texrole_map[texrole_sz] = {
   {"emissive",      mjTEXROLE_EMISSIVE},
   {"rgba",          mjTEXROLE_RGBA},
   {"orm",           mjTEXROLE_ORM},
+};
+
+
+// box-box collider implementation
+const int boxbox_sz = 3;
+const mjMap boxbox_map[boxbox_sz] = {
+  {"new",           mjBOXBOX_NEW},
+  {"legacy",        mjBOXBOX_LEGACY},
+  {"convex",        mjBOXBOX_CONVEX}
 };
 
 
@@ -1361,6 +1370,7 @@ void mjXReader::Option(XMLElement* section, mjSpec* s, mjOption* opt) {
   read("o_friction", 5, opt->o_friction, false, false);
 
   read("integrator", opt->integrator, integrator_map, integrator_sz);
+  read("boxbox", opt->boxbox, boxbox_map, boxbox_sz);
   read("cone", opt->cone, cone_map, cone_sz);
   read("jacobian", opt->jacobian, jac_map, jac_sz);
   read("solver", opt->solver, solver_map, solver_sz);
@@ -1419,7 +1429,6 @@ void mjXReader::Option(XMLElement* section, mjSpec* s, mjOption* opt) {
     READDSBL("nativeccd",    mjDSBL_NATIVECCD)
     READDSBL("island",       mjDSBL_ISLAND)
     READDSBL("multiccd",     mjDSBL_MULTICCD)
-    READDSBL("boxbox",       mjDSBL_BOXBOX)
 #undef READDSBL
 
 #define READENBL(NAME, MASK)                       \
@@ -1433,9 +1442,8 @@ void mjXReader::Option(XMLElement* section, mjSpec* s, mjOption* opt) {
     READENBL("energy",      mjENBL_ENERGY)
     READENBL("fwdinv",      mjENBL_FWDINV)
     READENBL("invdiscrete", mjENBL_INVDISCRETE)
-    READENBL("sleep",        mjENBL_SLEEP)
-    READENBL("diagexact",    mjENBL_DIAGEXACT)
-    READENBL("boxboxlegacy", mjENBL_BOXBOXLEGACY)
+    READENBL("sleep",       mjENBL_SLEEP)
+    READENBL("diagexact",   mjENBL_DIAGEXACT)
 #undef READENBL
   }
 }

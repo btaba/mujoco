@@ -64,6 +64,8 @@ extern const mjMap projection_map[];
 extern const mjMap camlight_map[];
 extern const mjMap lighttype_map[];
 extern const mjMap integrator_map[];
+extern const int boxbox_sz;
+extern const mjMap boxbox_map[];
 extern const mjMap collision_map[];
 extern const mjMap impedance_map[];
 extern const mjMap reference_map[];

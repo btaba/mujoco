@@ -816,6 +816,7 @@ void MakePhysicsSection(mj::Simulate* sim) {
   mjuiDef defPhysics[] = {
     {mjITEM_SECTION,   "Physics",       mjPRESERVE, nullptr,          "AP"},
     {mjITEM_SELECT,    "Integrator",    2, &(opt->integrator),        "Euler\nRK4\nimplicit\nimplicitfast"},
+    {mjITEM_SELECT,    "BoxBox",        2, &(opt->boxbox),            "New\nLegacy\nConvex"},
     {mjITEM_SELECT,    "Cone",          2, &(opt->cone),              "Pyramidal\nElliptic"},
     {mjITEM_SELECT,    "Jacobian",      2, &(opt->jacobian),          "Dense\nSparse\nAuto"},
     {mjITEM_SELECT,    "Solver",        2, &(opt->solver),            "PGS\nCG\nNewton"},

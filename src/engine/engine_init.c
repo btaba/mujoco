@@ -89,6 +89,7 @@ void mj_defaultOption(mjOption* opt) {
 
   // discrete options
   opt->integrator         = mjINT_EULER;
+  opt->boxbox             = mjBOXBOX_NEW;
   opt->cone               = mjCONE_PYRAMIDAL;
   opt->jacobian           = mjJAC_AUTO;
   opt->solver             = mjSOL_NEWTON;

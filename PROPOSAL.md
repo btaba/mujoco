@@ -3,8 +3,8 @@
 This branch replaces MuJoCo's box-box narrowphase with a structured
 implementation (separating-axis test + Sutherland-Hodgman clipping + true
 edge-edge contacts), deletes the legacy collider's accumulated repair logic,
-and adds runtime flags so the legacy collider and the general convex pipeline
-(GJK/EPA) can be compared interactively on any model. Not for landing as-is:
+and adds a runtime option (`mjOption.boxbox`) so the legacy collider and the
+general convex pipeline (GJK/EPA) can be compared interactively on any model. Not for landing as-is:
 the last two commits (per-point-depth cherry-pick from
 `yuvaltassa/ccd-manifold-depth` and this document) exist for comparison.
 
@@ -24,10 +24,11 @@ the last two commits (per-point-depth cherry-pick from
   the `kRemoveRatio` outside-box filter and its missing-contact fallback
   hole, exact-float dedup, and the edge-path depth clamp. The ground-truth
   gates verify no contact ever exceeds the true depth without any clamp.
-- **Collider selection flags**: disable flag `boxbox` routes box-box pairs to
-  the convex pipeline; enable flag `boxboxlegacy` selects the legacy
-  implementation (preserved verbatim). Both are checkboxes in the simulate
-  viewer.
+- **Collider selection**: `mjOption.boxbox` selects the box-box narrowphase
+  -- `<option boxbox="new|legacy|convex"/>` in XML, a `BoxBox` dropdown next
+  to Integrator in the simulate viewer's Option panel. `new` is the rewrite,
+  `legacy` the previous implementation preserved verbatim, `convex` the
+  general GJK/EPA pipeline. One control, one visible state.
 - **Validation assets** (`boxbox_validation/`): exact-depth cross-validation,
   GJK comparison cases with keyframes, stacking demos, a 3-way dynamics
   benchmark, per-point depth analysis, and an old-vs-new perf harness.
@@ -107,6 +108,35 @@ the far corner) and reported dist = -1e-4 at corners whose true gap is
 contact; the cherry-picked patch fixes the convex pipeline's version of
 this.
 
+## Recommendation
+
+The SAT-based specialized collider (`new`) is the most promising box-box
+narrowphase, on three measured grounds:
+
+1. **Speed**: fastest in every scenario -- 13-17% cheaper steps than the
+   patched convex pipeline on aligned towers and 54% cheaper on perturbed
+   stacks (100.2 vs 154.4 us/step), 17% faster end-to-end than the legacy
+   collider on the dense pile.
+2. **Stability where it is hardest**: on perturbed stacks it settles 7.6x
+   quieter than the patched convex pipeline (1.4e-2 vs 1.1e-1) with fewer
+   contacts and solver iterations; the legacy collider collapses the aligned
+   30-cube tower outright (27/30 fallen) while `new` holds it at 3.4e-9
+   settle velocity.
+3. **Exactness**: median depth error 1e-17 (machine precision) vs the
+   convex pipeline's 1e-9 iterative floor, with contact existence agreeing
+   on every sampled pose.
+
+Stated fairly: the per-point depth patch brings the convex pipeline to
+parity on *aligned* towers and ahead on plates settle velocity (4.2e-4 vs
+2.7e-2, suspected 4-contact-cap interaction, under investigation), and its
+depth-error tail (p99 2e-9) is tighter than `new`'s deliberate 5%
+face-preference band. That patch should land regardless -- it fixes real
+artifacts for mesh-mesh pairs, which have no specialized collider. But for
+box-box pairs specifically, the specialized collider wins on cost and on
+the harder stability scenarios while being exactly verifiable, and the
+`boxbox` option makes every one of these claims reproducible in the viewer
+in under a minute.
+
 ## Running the demos
 
 Build, then run the viewer against any scene:
@@ -115,14 +145,16 @@ Build, then run the viewer against any scene:
     cmake --build build -j 14
     ./build/bin/simulate boxbox_validation/stacking_demo/tower30.xml
 
-In the viewer, open the left panel's **Option** section: `BoxBox` appears
-under the disable-flag checkboxes and `BoxBoxLegacy` under the enable-flag
-checkboxes. Press Backspace to reset the scene after flipping a flag.
-Enabling `BoxBoxLegacy` collapses the 30-cube tower; disabling `BoxBox`
-switches to the convex pipeline. `stacking_demo/perturbed.xml` shows the
-perturbed-tower comparison. For `boxbox_validation/failure_cases/case*.xml`,
-load the keyframe (Simulation section, key 0 -> "Load key") to pose the
-pairs, and run `verify_failure_cases.py` for the numbers.
+In the viewer, open the left panel's **Option** section and use the
+**BoxBox** dropdown (next to Integrator): `New`, `Legacy`, or `Convex` --
+the selection is always visible, one state at a time. Press Backspace to
+reset the scene after switching. `Legacy` collapses the 30-cube tower;
+`Convex` is the GJK/EPA pipeline (with the per-point depth patch on this
+branch). `stacking_demo/perturbed.xml` shows the perturbed-tower
+comparison. For `boxbox_validation/failure_cases/case*.xml`, load the
+keyframe (Simulation section, key 0 -> "Load key") to pose the pair, then
+switch modes with the dropdown; `verify_failure_cases.py` prints all three
+modes' depths against the exact value.
 
 Scripted equivalents: `stack_bench.py`, `plate_pair.py`,
 `search_gjk_failures.py <case> <n>`, `perf/benchmark.sh <old-ref>` (see

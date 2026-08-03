@@ -75,6 +75,9 @@
             :ref:`integrator<option-integrator>`
 
          .. grid-item::
+            :ref:`boxbox<option-boxbox>`
+
+         .. grid-item::
             :ref:`cone<option-cone>`
 
          .. grid-item::
@@ -168,9 +171,6 @@
                :ref:`island<option-flag-island>`
 
             .. grid-item::
-               :ref:`boxbox<option-flag-boxbox>`
-
-            .. grid-item::
                :ref:`override<option-flag-override>`
 
             .. grid-item::
@@ -190,9 +190,6 @@
 
             .. grid-item::
                :ref:`diagexact<option-flag-diagexact>`
-
-            .. grid-item::
-               :ref:`boxboxlegacy<option-flag-boxboxlegacy>`
 
 
    .. dropdown:: :ref:`compiler<compiler>` |*|

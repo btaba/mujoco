@@ -38,6 +38,7 @@
     XVEC( mjtNum, o_solimp,          mjNIMP )  \
     XVEC( mjtNum, o_friction,        5      )  \
     X   ( int,    integrator,        1      )  \
+    X   ( int,    boxbox,            1      )  \
     X   ( int,    cone,              1      )  \
     X   ( int,    jacobian,          1      )  \
     X   ( int,    solver,            1      )  \
